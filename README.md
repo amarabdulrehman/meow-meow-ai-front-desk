@@ -45,4 +45,4 @@ A pet owner sends one message, and the system books, cancels or reschedules on *
 - Two customers booking the exact same slot at the same instant is not fully atomic.
 - Free-tier LLM quotas (mitigated by fallback tiers).
 
-Built by **Afnan** and **Amar**.
+Built by **Amar**.
