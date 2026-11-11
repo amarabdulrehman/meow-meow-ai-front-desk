@@ -1,0 +1,83 @@
+{
+  "name": "MMVH Error Handler",
+  "nodes": [
+    {
+      "id": "8245f1a1-a61d-4f21-adbf-5b42b0fa39ab",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "83a36664-275e-4aae-a599-0f60abb74787",
+      "name": "Build NEEDS_ATTENTION Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Any unhandled failure / timeout in the MMVH workflows lands here and is logged as NEEDS_ATTENTION\nconst e = $input.first().json;\nconst ex = e.execution || {};\nconst msg = String((ex.error && (ex.error.message || ex.error.description)) || 'unknown error').slice(0, 300);\nconst row = [ 'n/a (execution ' + (ex.id || '?') + ')', new Date().toISOString(), '', 'UNKNOWN', 'NEEDS_ATTENTION',\n  'Workflow failure - staff must review this execution. Nothing should be assumed booked.', '', String(ex.id || ''), 'error-workflow',\n  'Workflow: ' + ((e.workflow && e.workflow.name) || '?') + ' | last node: ' + (ex.lastNodeExecuted || '?') + ' | ' + msg + (ex.url ? ' | ' + ex.url : '') ];\nreturn [{ json: { http: { url: 'https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values/' + encodeURIComponent('CallLog!A:J') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', body: { values: [row] } } } }];"
+      }
+    },
+    {
+      "id": "7ade52dd-e6fa-435d-a8f7-12bb2bb257d8",
+      "name": "Write CallLog",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleSheetsOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.http.body) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Build NEEDS_ATTENTION Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build NEEDS_ATTENTION Row": {
+      "main": [
+        [
+          {
+            "node": "Write CallLog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

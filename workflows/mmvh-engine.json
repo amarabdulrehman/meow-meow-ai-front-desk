@@ -1,0 +1,1022 @@
+{
+  "name": "MMVH Engine (booking tools)",
+  "nodes": [
+    {
+      "id": "127d8e02-4f7f-42d8-90da-2a5418bc6466",
+      "name": "Note c588",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -40
+      ],
+      "parameters": {
+        "content": "## MMVH Engine — deterministic booking tools\nCalled by the AI agent (Front Desk) via **Workflow Tool** nodes with `action` = check | book | cancel | reschedule.\n\n* Loads **Config at runtime** from the Sheet on every call (E4)\n* All business rules + live Google Calendar conflicts are checked in code — the LLM can never invent a booking\n* Every Google call has its own success/failure branch: rollback, revert, or NEEDS_ATTENTION",
+        "width": 620,
+        "height": 300,
+        "color": 4
+      }
+    },
+    {
+      "id": "bfc4144a-261a-4e8f-8c06-357e4a9fd13f",
+      "name": "Note 0cdd",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        -300
+      ],
+      "parameters": {
+        "content": "### Book: create event → save row → (row fails ⇒ delete event; delete fails ⇒ NEEDS_ATTENTION)",
+        "width": 1800,
+        "height": 180,
+        "color": 5
+      }
+    },
+    {
+      "id": "0526721d-4321-4b1f-b95c-bd18be4372c8",
+      "name": "Note 3224",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        260
+      ],
+      "parameters": {
+        "content": "### Reschedule (E2): move event → update same row → (row fails ⇒ move event back)",
+        "width": 1800,
+        "height": 120,
+        "color": 6
+      }
+    },
+    {
+      "id": "3da095cd-520e-4af3-b43b-b8265bd20d7d",
+      "name": "Note 13ff",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        840,
+        560
+      ],
+      "parameters": {
+        "content": "### Cancel: delete event → mark row CANCELED (confirm only after deletion succeeds)",
+        "width": 1100,
+        "height": 120,
+        "color": 3
+      }
+    },
+    {
+      "id": "8f77341e-c87b-4f5d-82e1-10e90f88fcd4",
+      "name": "Engine Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "action",
+              "type": "string"
+            },
+            {
+              "name": "request_id",
+              "type": "string"
+            },
+            {
+              "name": "message",
+              "type": "string"
+            },
+            {
+              "name": "owner_name",
+              "type": "string"
+            },
+            {
+              "name": "email",
+              "type": "string"
+            },
+            {
+              "name": "pet_name",
+              "type": "string"
+            },
+            {
+              "name": "species",
+              "type": "string"
+            },
+            {
+              "name": "service_id",
+              "type": "string"
+            },
+            {
+              "name": "date",
+              "type": "string"
+            },
+            {
+              "name": "time",
+              "type": "string"
+            },
+            {
+              "name": "reference",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a9664701-857d-4b6e-a719-9e95057493cf",
+      "name": "Read Config & Appointments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values:batchGet?ranges=Config!A:C&ranges=Appointments!A:Q",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleSheetsOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "a429955a-16d9-4347-b6ac-8ea377f4ef47",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// ===== MMVH booking-rule library (deterministic; the LLM never decides availability) =====\nconst MMVH = (function () {\n  const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];\n  const DOW_LONG = {Sun:'Sunday',Mon:'Monday',Tue:'Tuesday',Wed:'Wednesday',Thu:'Thursday',Fri:'Friday',Sat:'Saturday'};\n  const pad = n => String(n).padStart(2,'0');\n  const hm = s => { const m = /^(\\d{1,2}):(\\d{2})$/.exec(String(s||'').trim()); if(!m) return null; const h=+m[1], mi=+m[2]; if(h>23||mi>59) return null; return h*60+mi; };\n  const dateOk = s => { const m = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(String(s||'').trim()); if(!m) return null; const ms = Date.UTC(+m[1],+m[2]-1,+m[3]); const d = new Date(ms); if(d.getUTCFullYear()!==+m[1]||d.getUTCMonth()!==+m[2]-1||d.getUTCDate()!==+m[3]) return null; return ms; };\n  // \"local ms\" = clinic wall-clock time encoded as if it were UTC\n  const local = (dateStr, timeStr) => { const d = dateOk(dateStr); const t = hm(timeStr); return (d===null||t===null) ? null : d + t*60000; };\n  const fmt = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };\n  const fmtDate = ms => fmt(ms).slice(0,10);\n  const fmtTime = ms => fmt(ms).slice(11);\n  const dow = ms => DOW[new Date(ms).getUTCDay()];\n  const minOfDay = ms => { const d = new Date(ms); return d.getUTCHours()*60 + d.getUTCMinutes(); };\n  const dayStart = ms => ms - (ms % 86400000);\n\n  // Parse the Config tab (setting | value | notes) into a rules object\n  function parseConfig(rows) {\n    if (!Array.isArray(rows) || rows.length < 2) throw new Error('Config tab is empty or unreadable');\n    const kv = {};\n    for (const r of rows.slice(1)) if (r && r[0] !== undefined && String(r[0]).trim()) kv[String(r[0]).trim()] = String(r[1] ?? '').trim();\n    const req = k => { if (!kv[k]) throw new Error('Config missing: ' + k); return kv[k]; };\n    const offStr = kv['clinic.utc_offset'] || '-07:00';\n    const om = /^([+-])(\\d{2}):(\\d{2})$/.exec(offStr); if (!om) throw new Error('Config clinic.utc_offset invalid');\n    const cfg = {\n      name: kv['clinic.name'] || 'Meow Meow Veterinary Hospital',\n      tz: kv['clinic.timezone'] || 'America/Phoenix', offsetStr: offStr,\n      offsetMin: (om[1]==='-'?-1:1) * (+om[2]*60 + +om[3]),\n      arenaNowStr: req('clinic.arena_now'),\n      openDays: req('clinic.open_days').split(',').map(s=>s.trim()).filter(Boolean),\n      open: hm(req('clinic.open_time')), close: hm(req('clinic.close_time')),\n      openStr: req('clinic.open_time'), closeStr: req('clinic.close_time'),\n      holidays: (kv['clinic.holidays']||'').split(',').map(s=>s.trim()).filter(Boolean),\n      lead: Number(req('clinic.lead_time_minutes')), grid: Number(req('clinic.slot_grid_minutes')),\n      lastDate: req('clinic.last_booking_date'), providers: {}, services: {},\n      fault: String(kv['debug.fault'] || 'none').trim().toLowerCase()   // test-only fault injection; must be 'none' in production\n    };\n    const an = /^(\\d{4}-\\d{2}-\\d{2})[ T](\\d{2}:\\d{2})$/.exec(cfg.arenaNowStr);\n    if (!an) throw new Error('Config clinic.arena_now invalid');\n    cfg.arenaNow = local(an[1], an[2]);\n    cfg.lastDateMs = dateOk(cfg.lastDate); if (cfg.lastDateMs === null) throw new Error('Config clinic.last_booking_date invalid');\n    for (const k of Object.keys(kv)) {\n      let m = /^provider\\.(.+)\\.(days|lunch_start|lunch_end|calendar_id)$/.exec(k);\n      if (m) { const p = cfg.providers[m[1]] = cfg.providers[m[1]] || {name:m[1]}; p[m[2]] = kv[k]; continue; }\n      m = /^service\\.([^.]+)\\.(name|species|provider|duration_minutes)$/.exec(k);\n      if (m) { const id = m[1].toUpperCase(); const s = cfg.services[id] = cfg.services[id] || {id}; s[m[2]] = kv[k]; }\n    }\n    for (const p of Object.values(cfg.providers)) {\n      p.days = String(p.days||'').split(',').map(s=>s.trim()).filter(Boolean);\n      p.lunchStart = hm(p.lunch_start); p.lunchEnd = hm(p.lunch_end);\n    }\n    for (const s of Object.values(cfg.services)) {\n      s.species = String(s.species||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);\n      s.duration = Number(s.duration_minutes);\n      if (!(s.duration > 0)) throw new Error('Config duration invalid for ' + s.id);\n      if (!cfg.providers[s.provider]) throw new Error('Config provider missing for ' + s.id);\n    }\n    return cfg;\n  }\n\n  const isWorkingDay = (cfg, dayMs) => cfg.openDays.includes(dow(dayMs)) && !cfg.holidays.includes(fmtDate(dayMs));\n\n  // Business-rule check for one slot. Returns human-readable reasons (empty array = rules OK)\n  function ruleReasons(cfg, svc, startMs, durationMin) {\n    const prov = cfg.providers[svc.provider];\n    const r = [];\n    const day = dayStart(startMs), dName = dow(startMs), dateStr = fmtDate(startMs);\n    const sMin = minOfDay(startMs), eMin = sMin + durationMin;\n    if (sMin % cfg.grid !== 0) r.push(`start times must be on a ${cfg.grid}-minute grid (:00, :15, :30 or :45)`);\n    if (startMs < cfg.arenaNow + cfg.lead*60000) r.push(`appointments must start at least ${cfg.lead} minutes after the current clinic time (${cfg.arenaNowStr}), so the earliest possible start is ${fmt(cfg.arenaNow + cfg.lead*60000)}`);\n    if (day > cfg.lastDateMs) r.push(`bookings are only open through ${cfg.lastDate}`);\n    if (!cfg.openDays.includes(dName)) r.push(`the clinic is closed on ${DOW_LONG[dName]}s`);\n    else if (cfg.holidays.includes(dateStr)) r.push(`the clinic is closed on ${dateStr} (holiday)`);\n    else if (!prov.days.includes(dName)) r.push(`${prov.name} does not work on ${DOW_LONG[dName]}s (works ${prov.days.join(', ')})`);\n    if (sMin < cfg.open || eMin > cfg.close || eMin > 1440) r.push(`the full ${durationMin}-minute appointment must fit within clinic hours ${cfg.openStr}-${cfg.closeStr}`);\n    if (prov.lunchStart !== null && sMin < prov.lunchEnd && eMin > prov.lunchStart) r.push(`it would overlap ${prov.name}'s lunch break ${prov.lunch_start}-${prov.lunch_end}`);\n    return r;\n  }\n\n  // Google Calendar events -> busy intervals (clinic local ms). EVERY event counts as busy, incl. all-day and \"free\" events.\n  function busyIntervals(cfg, items, excludeEventId) {\n    const off = cfg.offsetMin*60000, out = [];\n    for (const ev of (items||[])) {\n      if (!ev || ev.status === 'cancelled') continue;\n      if (excludeEventId && ev.id === excludeEventId) continue;\n      let s, e;\n      if (ev.start && ev.start.dateTime) { s = Date.parse(ev.start.dateTime) + off; e = Date.parse(ev.end.dateTime) + off; }\n      else if (ev.start && ev.start.date) { s = Date.parse(ev.start.date); e = Date.parse((ev.end && ev.end.date) || ev.start.date); if (e <= s) e = s + 86400000; }\n      else continue;\n      if (isFinite(s) && isFinite(e)) out.push({s, e, allDay: !!(ev.start && ev.start.date)});\n    }\n    return out;\n  }\n  const overlaps = (busy, s, e) => busy.filter(b => b.s < e && b.e > s);   // back-to-back allowed\n\n  // E1: up to 3 valid starts, chronological, from the requested time through the next two clinic working days, within the horizon\n  function alternatives(cfg, svc, busy, requestedStartMs, durationMin, max = 3) {\n    const earliest = cfg.arenaNow + cfg.lead*60000;\n    let from = Math.max(requestedStartMs, earliest);\n    const g = cfg.grid*60000; from = Math.ceil(from / g) * g;\n    let d = dayStart(requestedStartMs), found = 0;\n    while (found < 2) { d += 86400000; if (isWorkingDay(cfg, d)) found++; if (d > cfg.lastDateMs + 86400000*14) break; }\n    const windowEnd = Math.min(d + 86400000, cfg.lastDateMs + 86400000);\n    const out = [];\n    for (let t = from; t < windowEnd && out.length < max; t += g) {\n      if (ruleReasons(cfg, svc, t, durationMin).length) continue;\n      if (overlaps(busy, t, t + durationMin*60000).length) continue;\n      out.push(t);\n    }\n    return out;\n  }\n  // Calendar read window: requested day through the end of the 2nd clinic working day after it\n  function readWindow(cfg, startMs) {\n    let d = dayStart(startMs), found = 0;\n    while (found < 2) { d += 86400000; if (isWorkingDay(cfg, d)) found++; if (d > cfg.lastDateMs + 86400000*14) break; }\n    return { s: dayStart(startMs), e: d + 86400000 };\n  }\n  const iso = (cfg, ms) => fmt(ms).replace(' ', 'T') + ':00' + cfg.offsetStr;\n  const describe = (ms) => `${DOW_LONG[dow(ms)]} ${fmtDate(ms)} at ${fmtTime(ms)}`;\n  const newRef = (existing) => { const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; for(;;){ let r='MMVH-'; for(let i=0;i<6;i++) r+=A[Math.floor(Math.random()*A.length)]; if(!existing.has(r)) return r; } };\n  const rowsToObjects = (values) => { const v = values||[]; if (!v.length) return []; const head = v[0].map(h=>String(h).trim()); return v.slice(1).map((r,i)=>{ const o={_row:i+2}; head.forEach((h,j)=>o[h]=r[j]===undefined?'':String(r[j])); return o; }).filter(o=>o.reference); };\n  // Safety net: symptom / medication / urgency language must never be auto-booked\n  const SYMPTOM_RE = /\\b(sick|ill|vomit\\w*|throw\\w* up|diarr?h?o?ea|bleed\\w*|blood\\w*|seiz\\w*|letharg\\w*|limp\\w*|injur\\w*|wound\\w*|pain\\w*|hurt\\w*|not eating|won'?t eat|stopped eating|fever\\w*|cough\\w*|sneezing|swelling|swollen|lumps?|rash|itch(y|ing)|poison\\w*|toxic|ate (a |some )?(chocolate|grapes?|raisins?|xylitol|onions?)|collaps\\w*|breathing|choking|emergenc\\w*|urgent\\w*|dying|unconscious|medication|medicine|dosage|dose|diagnos\\w*|symptom\\w*|infect\\w*|parasite\\w*|worms|fleas?|ticks?)\\b/i;\n  return { DOW, DOW_LONG, pad, hm, dateOk, local, fmt, fmtDate, fmtTime, dow, minOfDay, dayStart, parseConfig, isWorkingDay, ruleReasons, busyIntervals, overlaps, alternatives, readWindow, iso, describe, newRef, rowsToObjects, SYMPTOM_RE };\n})();\n\n// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\n// Validate the tool call against Config + Appointments. Routes: 0 = return result, 1 = read calendar, 2 = cancel (delete event)\nconst t = $('Engine Trigger').first().json;\nconst sheet = $input.first().json;\nconst S = v => String(v === undefined || v === null ? '' : v).trim();\nconst action = S(t.action).toLowerCase();\nconst SPECIES_ALIAS = { puppy: 'dog', dogs: 'dog', kitten: 'cat', cats: 'cat', bunny: 'rabbit', rabbits: 'rabbit', birds: 'bird', parrot: 'bird', budgie: 'bird', parakeet: 'bird', cockatiel: 'bird' };\nconst sp0 = S(t.species).toLowerCase();\nconst inp = { request_id: S(t.request_id), message: S(t.message), owner_name: S(t.owner_name), email: S(t.email).toLowerCase(), pet_name: S(t.pet_name),\n  species: SPECIES_ALIAS[sp0] || sp0, service_id: S(t.service_id).toUpperCase(), date: S(t.date), time: S(t.time), reference: S(t.reference).toUpperCase() };\nif (sheet.error || !Array.isArray(sheet.valueRanges)) return res(0, { ok: false, status: 'ERROR', action, message: 'Our records system is unavailable right now, so nothing was booked or changed. Please try again shortly or ask for staff help.', error: errText(sheet) || 'sheet read failed' });\nlet cfg;\ntry { cfg = MMVH.parseConfig(sheet.valueRanges[0].values); }\ncatch (e) { return res(0, { ok: false, status: 'ERROR', action, message: 'The clinic configuration could not be loaded, so nothing was booked or changed. Staff have been alerted.', error: e.message }); }\nconst appts = MMVH.rowsToObjects(sheet.valueRanges[1] && sheet.valueRanges[1].values);\nconst svcList = Object.values(cfg.services).map(s => s.id + ' ' + s.name + ' (' + s.species.join(', ') + '; ' + s.provider + '; ' + s.duration + ' min)').join('; ');\nconst NI = (msg, extra) => res(0, Object.assign({ ok: false, status: 'NEEDS_INFO', action, message: msg }, extra || {}));\n\nif (action === 'book' || action === 'check') {\n  const need = action === 'book' ? ['owner_name', 'email', 'pet_name', 'species', 'service_id', 'date', 'time'] : ['service_id', 'date', 'time'];\n  const missing = need.filter(k => !inp[k]);\n  if (missing.length) return NI('Missing required details: ' + missing.join(', ') + '. Please ask the customer for them; do not guess.', { missing });\n  if (action === 'book' && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(inp.email)) return NI('The email address \"' + inp.email + '\" does not look valid. Please ask for a valid email.', { missing: ['email'] });\n  if (action === 'book' && MMVH.SYMPTOM_RE.test(inp.message)) return res(0, { ok: false, status: 'HANDOFF_REQUIRED', action, message: 'The customer message mentions symptoms, medication or an urgent concern. This must be handed to clinic staff; no appointment was booked. Do not give medical advice.' });\n  if (action === 'book' && inp.request_id) {\n    const prior = appts.find(a => a.request_id === inp.request_id && a.status === 'ACTIVE');\n    if (prior) return res(0, bookedResult(prior, true));   // idempotency: same request_id never books twice\n  }\n  const svc = cfg.services[inp.service_id] || Object.values(cfg.services).find(s => s.name.toLowerCase() === inp.service_id.toLowerCase());\n  if (!svc) return res(0, { ok: false, status: 'DECLINED', action, message: 'That service is not offered. Bookable services: ' + svcList + '. Offer a staff handoff for anything else.' });\n  if (inp.species && !svc.species.includes(inp.species)) {\n    const fits = Object.values(cfg.services).filter(s => s.species.includes(inp.species));\n    if (fits.length) return res(0, { ok: false, status: 'DECLINED', action, message: svc.name + ' (' + svc.id + ') is only offered for ' + svc.species.join(' and ') + ', so it cannot be booked for a ' + inp.species + '. Nothing was booked. For a ' + inp.species + ' we offer: ' + fits.map(s => s.id + ' ' + s.name + ' with ' + s.provider + ' (' + s.duration + ' min)').join('; ') + ' - the customer can send a new request for that service, or we can hand this to a staff member.' });\n    return res(0, { ok: false, status: 'DECLINED', action, message: 'We cannot book appointments for a ' + inp.species + '. Supported: ' + svcList + '. Offer a staff handoff.' });\n  }\n  const startMs = MMVH.local(inp.date, inp.time);\n  if (startMs === null) return NI('Date must be YYYY-MM-DD and time HH:MM (24-hour clinic time). Got date \"' + inp.date + '\", time \"' + inp.time + '\".', { missing: ['date', 'time'] });\n  const prov = cfg.providers[svc.provider];\n  if (!prov || !prov.calendar_id) return res(0, { ok: false, status: 'ERROR', action, message: 'Provider calendar is not configured; nothing was booked. Staff have been alerted.' });\n  const w = MMVH.readWindow(cfg, startMs);\n  const ctx = { action, inp, svcId: svc.id, startMs, duration: svc.duration, calendarId: prov.calendar_id, provider: prov.name, excludeEventId: '', fault: cfg.fault };\n  return res(1, null, { ctx, calendarListUrl: CAL(cfg.fault === 'calendar_read' ? 'fault-injection-invalid-calendar' : prov.calendar_id) + '?singleEvents=true&orderBy=startTime&maxResults=2500&showDeleted=false&timeMin=' + enc(MMVH.iso(cfg, w.s)) + '&timeMax=' + enc(MMVH.iso(cfg, w.e)) });\n}\n\nif (action === 'cancel' || action === 'reschedule') {\n  const missing = ['reference', 'email'].filter(k => !inp[k]);\n  if (action === 'reschedule') { if (!inp.date) missing.push('date'); if (!inp.time) missing.push('time'); }\n  if (missing.length) return NI('Missing required details: ' + missing.join(', ') + '. ' + (action === 'cancel' ? 'Cancellation' : 'Rescheduling') + ' needs the booking reference and the email used for the booking' + (action === 'reschedule' ? ', plus the exact new date and time' : '') + '.', { missing });\n  const row = appts.find(a => a.reference.trim().toUpperCase() === inp.reference && a.email.trim().toLowerCase() === inp.email);\n  if (!row) return res(0, { ok: false, status: 'VERIFICATION_FAILED', action, message: GENERIC_VERIFY });   // same text for unknown reference and wrong email\n  const sameRef = appts.filter(a => a.reference.trim().toUpperCase() === inp.reference);\n  if (sameRef.length > 1 || !row.event_id) return res(0, { ok: false, status: 'NEEDS_ATTENTION', action, message: 'Appointment ' + row.reference + ' has an inconsistent record (' + (sameRef.length > 1 ? 'duplicate reference rows' : 'missing calendar event id') + '), so nothing was changed. Staff have been flagged to reconcile it.' });\n  if (row.status !== 'ACTIVE') return res(0, { ok: false, status: 'NOT_ACTIVE', action, message: 'Appointment ' + row.reference + ' is already ' + row.status.toLowerCase() + ', so there is nothing to ' + action + '.' });\n  const prov = cfg.providers[row.provider];\n  if (!prov || !prov.calendar_id) return res(0, { ok: false, status: 'ERROR', action, message: 'Provider calendar is not configured; nothing was changed.' });\n  if (action === 'cancel') {\n    return res(2, null, { ctx: { action, inp, row, calendarId: prov.calendar_id, fault: cfg.fault }, http: { url: CAL(cfg.fault === 'calendar_delete' ? 'fault-injection-invalid-calendar' : prov.calendar_id) + '/' + enc(row.event_id) } });\n  }\n  const svc = cfg.services[row.service_id];\n  if (!svc) return res(0, { ok: false, status: 'ERROR', action, message: 'The original service is no longer configured; please ask staff to reschedule.' });\n  const startMs = MMVH.local(inp.date, inp.time);\n  if (startMs === null) return NI('New date must be YYYY-MM-DD and time HH:MM (24-hour clinic time).', { missing: ['date', 'time'] });\n  const oS = MMVH.local(row.start_local.slice(0, 10), row.start_local.slice(11, 16)), oE = MMVH.local(row.end_local.slice(0, 10), row.end_local.slice(11, 16));\n  const duration = Math.round((oE - oS) / 60000) || svc.duration;   // existing appointments keep their original duration\n  if (startMs === oS) return NI('Appointment ' + row.reference + ' is already scheduled for ' + row.start_local + '. Ask for a different new time.');\n  const w = MMVH.readWindow(cfg, startMs);\n  const ctx = { action, inp, row, svcId: svc.id, startMs, duration, calendarId: prov.calendar_id, provider: prov.name, excludeEventId: row.event_id, fault: cfg.fault };\n  return res(1, null, { ctx, calendarListUrl: CAL(cfg.fault === 'calendar_read' ? 'fault-injection-invalid-calendar' : prov.calendar_id) + '?singleEvents=true&orderBy=startTime&maxResults=2500&showDeleted=false&timeMin=' + enc(MMVH.iso(cfg, w.s)) + '&timeMax=' + enc(MMVH.iso(cfg, w.e)) });\n}\nreturn res(0, { ok: false, status: 'ERROR', action, message: 'Unknown engine action \"' + action + '\".' });\n"
+      }
+    },
+    {
+      "id": "ebfaf4c9-01c1-4e8d-833d-d887a78ae73e",
+      "name": "Route Validation",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ $json.route }}"
+      }
+    },
+    {
+      "id": "94f4bb4b-48ae-4231-ab9d-3ea4bed96b85",
+      "name": "Read Calendar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.calendarListUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "options": {}
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleCalendarOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "fb92714e-eb4c-40f5-872c-ff9f569e7c6b",
+      "name": "Evaluate Slot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// ===== MMVH booking-rule library (deterministic; the LLM never decides availability) =====\nconst MMVH = (function () {\n  const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];\n  const DOW_LONG = {Sun:'Sunday',Mon:'Monday',Tue:'Tuesday',Wed:'Wednesday',Thu:'Thursday',Fri:'Friday',Sat:'Saturday'};\n  const pad = n => String(n).padStart(2,'0');\n  const hm = s => { const m = /^(\\d{1,2}):(\\d{2})$/.exec(String(s||'').trim()); if(!m) return null; const h=+m[1], mi=+m[2]; if(h>23||mi>59) return null; return h*60+mi; };\n  const dateOk = s => { const m = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(String(s||'').trim()); if(!m) return null; const ms = Date.UTC(+m[1],+m[2]-1,+m[3]); const d = new Date(ms); if(d.getUTCFullYear()!==+m[1]||d.getUTCMonth()!==+m[2]-1||d.getUTCDate()!==+m[3]) return null; return ms; };\n  // \"local ms\" = clinic wall-clock time encoded as if it were UTC\n  const local = (dateStr, timeStr) => { const d = dateOk(dateStr); const t = hm(timeStr); return (d===null||t===null) ? null : d + t*60000; };\n  const fmt = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };\n  const fmtDate = ms => fmt(ms).slice(0,10);\n  const fmtTime = ms => fmt(ms).slice(11);\n  const dow = ms => DOW[new Date(ms).getUTCDay()];\n  const minOfDay = ms => { const d = new Date(ms); return d.getUTCHours()*60 + d.getUTCMinutes(); };\n  const dayStart = ms => ms - (ms % 86400000);\n\n  // Parse the Config tab (setting | value | notes) into a rules object\n  function parseConfig(rows) {\n    if (!Array.isArray(rows) || rows.length < 2) throw new Error('Config tab is empty or unreadable');\n    const kv = {};\n    for (const r of rows.slice(1)) if (r && r[0] !== undefined && String(r[0]).trim()) kv[String(r[0]).trim()] = String(r[1] ?? '').trim();\n    const req = k => { if (!kv[k]) throw new Error('Config missing: ' + k); return kv[k]; };\n    const offStr = kv['clinic.utc_offset'] || '-07:00';\n    const om = /^([+-])(\\d{2}):(\\d{2})$/.exec(offStr); if (!om) throw new Error('Config clinic.utc_offset invalid');\n    const cfg = {\n      name: kv['clinic.name'] || 'Meow Meow Veterinary Hospital',\n      tz: kv['clinic.timezone'] || 'America/Phoenix', offsetStr: offStr,\n      offsetMin: (om[1]==='-'?-1:1) * (+om[2]*60 + +om[3]),\n      arenaNowStr: req('clinic.arena_now'),\n      openDays: req('clinic.open_days').split(',').map(s=>s.trim()).filter(Boolean),\n      open: hm(req('clinic.open_time')), close: hm(req('clinic.close_time')),\n      openStr: req('clinic.open_time'), closeStr: req('clinic.close_time'),\n      holidays: (kv['clinic.holidays']||'').split(',').map(s=>s.trim()).filter(Boolean),\n      lead: Number(req('clinic.lead_time_minutes')), grid: Number(req('clinic.slot_grid_minutes')),\n      lastDate: req('clinic.last_booking_date'), providers: {}, services: {},\n      fault: String(kv['debug.fault'] || 'none').trim().toLowerCase()   // test-only fault injection; must be 'none' in production\n    };\n    const an = /^(\\d{4}-\\d{2}-\\d{2})[ T](\\d{2}:\\d{2})$/.exec(cfg.arenaNowStr);\n    if (!an) throw new Error('Config clinic.arena_now invalid');\n    cfg.arenaNow = local(an[1], an[2]);\n    cfg.lastDateMs = dateOk(cfg.lastDate); if (cfg.lastDateMs === null) throw new Error('Config clinic.last_booking_date invalid');\n    for (const k of Object.keys(kv)) {\n      let m = /^provider\\.(.+)\\.(days|lunch_start|lunch_end|calendar_id)$/.exec(k);\n      if (m) { const p = cfg.providers[m[1]] = cfg.providers[m[1]] || {name:m[1]}; p[m[2]] = kv[k]; continue; }\n      m = /^service\\.([^.]+)\\.(name|species|provider|duration_minutes)$/.exec(k);\n      if (m) { const id = m[1].toUpperCase(); const s = cfg.services[id] = cfg.services[id] || {id}; s[m[2]] = kv[k]; }\n    }\n    for (const p of Object.values(cfg.providers)) {\n      p.days = String(p.days||'').split(',').map(s=>s.trim()).filter(Boolean);\n      p.lunchStart = hm(p.lunch_start); p.lunchEnd = hm(p.lunch_end);\n    }\n    for (const s of Object.values(cfg.services)) {\n      s.species = String(s.species||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);\n      s.duration = Number(s.duration_minutes);\n      if (!(s.duration > 0)) throw new Error('Config duration invalid for ' + s.id);\n      if (!cfg.providers[s.provider]) throw new Error('Config provider missing for ' + s.id);\n    }\n    return cfg;\n  }\n\n  const isWorkingDay = (cfg, dayMs) => cfg.openDays.includes(dow(dayMs)) && !cfg.holidays.includes(fmtDate(dayMs));\n\n  // Business-rule check for one slot. Returns human-readable reasons (empty array = rules OK)\n  function ruleReasons(cfg, svc, startMs, durationMin) {\n    const prov = cfg.providers[svc.provider];\n    const r = [];\n    const day = dayStart(startMs), dName = dow(startMs), dateStr = fmtDate(startMs);\n    const sMin = minOfDay(startMs), eMin = sMin + durationMin;\n    if (sMin % cfg.grid !== 0) r.push(`start times must be on a ${cfg.grid}-minute grid (:00, :15, :30 or :45)`);\n    if (startMs < cfg.arenaNow + cfg.lead*60000) r.push(`appointments must start at least ${cfg.lead} minutes after the current clinic time (${cfg.arenaNowStr}), so the earliest possible start is ${fmt(cfg.arenaNow + cfg.lead*60000)}`);\n    if (day > cfg.lastDateMs) r.push(`bookings are only open through ${cfg.lastDate}`);\n    if (!cfg.openDays.includes(dName)) r.push(`the clinic is closed on ${DOW_LONG[dName]}s`);\n    else if (cfg.holidays.includes(dateStr)) r.push(`the clinic is closed on ${dateStr} (holiday)`);\n    else if (!prov.days.includes(dName)) r.push(`${prov.name} does not work on ${DOW_LONG[dName]}s (works ${prov.days.join(', ')})`);\n    if (sMin < cfg.open || eMin > cfg.close || eMin > 1440) r.push(`the full ${durationMin}-minute appointment must fit within clinic hours ${cfg.openStr}-${cfg.closeStr}`);\n    if (prov.lunchStart !== null && sMin < prov.lunchEnd && eMin > prov.lunchStart) r.push(`it would overlap ${prov.name}'s lunch break ${prov.lunch_start}-${prov.lunch_end}`);\n    return r;\n  }\n\n  // Google Calendar events -> busy intervals (clinic local ms). EVERY event counts as busy, incl. all-day and \"free\" events.\n  function busyIntervals(cfg, items, excludeEventId) {\n    const off = cfg.offsetMin*60000, out = [];\n    for (const ev of (items||[])) {\n      if (!ev || ev.status === 'cancelled') continue;\n      if (excludeEventId && ev.id === excludeEventId) continue;\n      let s, e;\n      if (ev.start && ev.start.dateTime) { s = Date.parse(ev.start.dateTime) + off; e = Date.parse(ev.end.dateTime) + off; }\n      else if (ev.start && ev.start.date) { s = Date.parse(ev.start.date); e = Date.parse((ev.end && ev.end.date) || ev.start.date); if (e <= s) e = s + 86400000; }\n      else continue;\n      if (isFinite(s) && isFinite(e)) out.push({s, e, allDay: !!(ev.start && ev.start.date)});\n    }\n    return out;\n  }\n  const overlaps = (busy, s, e) => busy.filter(b => b.s < e && b.e > s);   // back-to-back allowed\n\n  // E1: up to 3 valid starts, chronological, from the requested time through the next two clinic working days, within the horizon\n  function alternatives(cfg, svc, busy, requestedStartMs, durationMin, max = 3) {\n    const earliest = cfg.arenaNow + cfg.lead*60000;\n    let from = Math.max(requestedStartMs, earliest);\n    const g = cfg.grid*60000; from = Math.ceil(from / g) * g;\n    let d = dayStart(requestedStartMs), found = 0;\n    while (found < 2) { d += 86400000; if (isWorkingDay(cfg, d)) found++; if (d > cfg.lastDateMs + 86400000*14) break; }\n    const windowEnd = Math.min(d + 86400000, cfg.lastDateMs + 86400000);\n    const out = [];\n    for (let t = from; t < windowEnd && out.length < max; t += g) {\n      if (ruleReasons(cfg, svc, t, durationMin).length) continue;\n      if (overlaps(busy, t, t + durationMin*60000).length) continue;\n      out.push(t);\n    }\n    return out;\n  }\n  // Calendar read window: requested day through the end of the 2nd clinic working day after it\n  function readWindow(cfg, startMs) {\n    let d = dayStart(startMs), found = 0;\n    while (found < 2) { d += 86400000; if (isWorkingDay(cfg, d)) found++; if (d > cfg.lastDateMs + 86400000*14) break; }\n    return { s: dayStart(startMs), e: d + 86400000 };\n  }\n  const iso = (cfg, ms) => fmt(ms).replace(' ', 'T') + ':00' + cfg.offsetStr;\n  const describe = (ms) => `${DOW_LONG[dow(ms)]} ${fmtDate(ms)} at ${fmtTime(ms)}`;\n  const newRef = (existing) => { const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; for(;;){ let r='MMVH-'; for(let i=0;i<6;i++) r+=A[Math.floor(Math.random()*A.length)]; if(!existing.has(r)) return r; } };\n  const rowsToObjects = (values) => { const v = values||[]; if (!v.length) return []; const head = v[0].map(h=>String(h).trim()); return v.slice(1).map((r,i)=>{ const o={_row:i+2}; head.forEach((h,j)=>o[h]=r[j]===undefined?'':String(r[j])); return o; }).filter(o=>o.reference); };\n  // Safety net: symptom / medication / urgency language must never be auto-booked\n  const SYMPTOM_RE = /\\b(sick|ill|vomit\\w*|throw\\w* up|diarr?h?o?ea|bleed\\w*|blood\\w*|seiz\\w*|letharg\\w*|limp\\w*|injur\\w*|wound\\w*|pain\\w*|hurt\\w*|not eating|won'?t eat|stopped eating|fever\\w*|cough\\w*|sneezing|swelling|swollen|lumps?|rash|itch(y|ing)|poison\\w*|toxic|ate (a |some )?(chocolate|grapes?|raisins?|xylitol|onions?)|collaps\\w*|breathing|choking|emergenc\\w*|urgent\\w*|dying|unconscious|medication|medicine|dosage|dose|diagnos\\w*|symptom\\w*|infect\\w*|parasite\\w*|worms|fleas?|ticks?)\\b/i;\n  return { DOW, DOW_LONG, pad, hm, dateOk, local, fmt, fmtDate, fmtTime, dow, minOfDay, dayStart, parseConfig, isWorkingDay, ruleReasons, busyIntervals, overlaps, alternatives, readWindow, iso, describe, newRef, rowsToObjects, SYMPTOM_RE };\n})();\n\n// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\n// Combine business rules + live calendar. Routes: 0 = return result, 1 = create event (book), 2 = move event (reschedule)\nconst v = $('Validate Request').first().json;\nconst ctx = v.ctx;\nconst cal = $input.first().json;\nconst cfg = MMVH.parseConfig($('Read Config & Appointments').first().json.valueRanges[0].values);\nconst appts = MMVH.rowsToObjects($('Read Config & Appointments').first().json.valueRanges[1].values);\nconst svc = cfg.services[ctx.svcId];\nconst inp = ctx.inp;\nif (cal.error || !Array.isArray(cal.items)) return res(0, { ok: false, status: 'ERROR', action: ctx.action, message: 'Could not read ' + ctx.provider + \"'s calendar, so nothing was booked or changed. Please try again shortly.\", error: errText(cal) || 'calendar read failed' });\nconst busy = MMVH.busyIntervals(cfg, cal.items, ctx.excludeEventId);\nconst s = ctx.startMs, e = s + ctx.duration * 60000;\nconst reasons = MMVH.ruleReasons(cfg, svc, s, ctx.duration);\nconst clash = MMVH.overlaps(busy, s, e);\nif (clash.length) reasons.push(clash.some(b => b.allDay) ? ctx.provider + ' has an all-day event blocking ' + MMVH.fmtDate(s) : ctx.provider + ' already has another appointment or event at that time');\nconst slotTxt = MMVH.describe(s) + '-' + MMVH.fmtTime(e);\nif (reasons.length) {\n  const alts = MMVH.alternatives(cfg, svc, busy, s, ctx.duration);\n  const altList = alts.map(a => ({ date: MMVH.fmtDate(a), time: MMVH.fmtTime(a), label: MMVH.describe(a) }));\n  let msg = slotTxt + ' is not available for ' + svc.name + ' with ' + ctx.provider + ' because ' + reasons.join('; ') + '.';\n  msg += altList.length ? ' Valid alternatives (' + TZNOTE + '): ' + altList.map(a => a.label).join('; ') + '. Nothing has been booked - the customer must choose one.' : ' No valid alternative starts were found in the next two clinic working days; ask the customer for another time.';\n  if (ctx.action === 'reschedule') msg += ' The original appointment ' + ctx.row.reference + ' on ' + ctx.row.start_local + ' is unchanged.';\n  return res(0, { ok: false, status: 'UNAVAILABLE', action: ctx.action, message: msg, reasons, alternatives: altList });\n}\nif (ctx.action === 'check') return res(0, { ok: true, status: 'AVAILABLE', action: 'check', message: slotTxt + ' is available for ' + svc.name + ' (' + svc.id + ') with ' + ctx.provider + ' (' + ctx.duration + ' min, ' + TZNOTE + '). Not booked yet - call book_appointment with all details to book it.' });\nif (ctx.action === 'book') {\n  const ref = MMVH.newRef(new Set(appts.map(a => a.reference.toUpperCase())));\n  const body = { summary: ref + ' | ' + svc.name + ' | ' + inp.pet_name + ' (' + inp.species + ')',\n    description: 'Reference: ' + ref + '\\nOwner: ' + inp.owner_name + '\\nEmail: ' + inp.email + '\\nPet: ' + inp.pet_name + ' (' + inp.species + ')\\nService: ' + svc.id + ' ' + svc.name + '\\nProvider: ' + ctx.provider + '\\nRequest ID: ' + inp.request_id + '\\nBooked by MMVH AI Front Desk',\n    start: { dateTime: MMVH.iso(cfg, s), timeZone: cfg.tz }, end: { dateTime: MMVH.iso(cfg, e), timeZone: cfg.tz },\n    extendedProperties: { private: { mmvh_reference: ref, mmvh_request_id: inp.request_id } } };\n  const appt = { reference: ref, owner_name: inp.owner_name, email: inp.email, pet_name: inp.pet_name, species: inp.species, service_id: svc.id, provider: ctx.provider,\n    start_local: MMVH.fmt(s), end_local: MMVH.fmt(e), event_id: '', status: 'ACTIVE', request_id: inp.request_id, last_request_id: inp.request_id, service_name: svc.name, created_at: '', updated_at: '', notes: 'Booked via AI front desk' };\n  return res(1, null, { ctx, appt, http: { url: CAL(ctx.fault === 'calendar_create' ? 'fault-injection-invalid-calendar' : ctx.calendarId), body } });\n}\nconst body = { start: { dateTime: MMVH.iso(cfg, s), timeZone: cfg.tz }, end: { dateTime: MMVH.iso(cfg, e), timeZone: cfg.tz } };\nreturn res(2, null, { ctx, newStart: MMVH.fmt(s), newEnd: MMVH.fmt(e), http: { url: CAL(ctx.calendarId) + '/' + enc(ctx.fault === 'calendar_move' ? 'fault-injection-invalid-event' : ctx.row.event_id), body } });\n"
+      }
+    },
+    {
+      "id": "ecf8eb06-d5e6-4e4a-92f5-3880680e2d33",
+      "name": "Route Evaluation",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1320,
+        200
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ $json.route }}"
+      }
+    },
+    {
+      "id": "0b8f601e-5bd0-4fcf-b969-454323e46a33",
+      "name": "Create Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleCalendarOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "8be7ce77-4546-4435-b4bd-a7d1834df419",
+      "name": "After Create Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\n// Event created? -> save Appointments row (route 1). Calendar failure -> report failure, never success (route 0)\nconst p = $('Evaluate Slot').first().json;\nconst r = $input.first().json;\nif (r.error || !r.id) return res(0, { ok: false, status: 'ERROR', action: 'book', message: 'The calendar could not create the appointment, so it is NOT booked. Please try again shortly or ask for staff help.', error: errText(r) || 'no event id returned' });\nconst now = new Date().toISOString();\nconst a = Object.assign({}, p.appt, { event_id: r.id, created_at: now, updated_at: now });\nreturn res(1, null, { appt: a, eventId: r.id, calendarId: p.ctx.calendarId, fault: p.ctx.fault,\n  http: { url: 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + enc(String(p.ctx.fault).startsWith('appointment_write') ? 'FaultInjection!A:Q' : 'Appointments!A:Q') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', body: { values: [HEAD.map(h => a[h])] } } });\n"
+      }
+    },
+    {
+      "id": "e6b10cff-ac09-452f-b04b-41f6019fedd2",
+      "name": "Route Create",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1980,
+        0
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.route }}"
+      }
+    },
+    {
+      "id": "96d3a5b0-046f-4dc7-b7f6-ade30c8a66b5",
+      "name": "Save Appointment Row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        -100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleSheetsOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "165b8f0b-3bee-42b7-8768-3528def76d8b",
+      "name": "After Save Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        -100
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\n// Row saved -> BOOKED. Row failed -> roll back the calendar event (route 1)\nconst p = $('After Create Event').first().json;\nconst r = $input.first().json;\nif (!r.error && r.updates && r.updates.updatedRows >= 1) return res(0, bookedResult(p.appt, false));\nreturn res(1, null, { appt: p.appt, saveError: errText(r) || 'append failed', http: { url: CAL(p.calendarId) + '/' + enc(p.fault === 'appointment_write_and_rollback' ? 'fault-injection-invalid-event' : p.eventId) } });\n"
+      }
+    },
+    {
+      "id": "ff318f85-31c0-4abd-a148-70040021a3ed",
+      "name": "Route Save",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2640,
+        -100
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.route }}"
+      }
+    },
+    {
+      "id": "25f941e5-f4e3-447a-ad04-6ccfee8b678a",
+      "name": "Rollback Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        -200
+      ],
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "options": {}
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleCalendarOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "754edd00-7e40-41d8-819a-e33192febf13",
+      "name": "After Rollback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        -200
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\n// Rollback succeeded -> ERROR (nothing booked). Rollback failed -> NEEDS_ATTENTION with event_id for reconciliation\nconst p = $('After Save Row').first().json;\nconst r = $input.first().json;\nif (!r.error) return res(0, { ok: false, status: 'ERROR', action: 'book', message: 'The appointment record could not be saved, so the calendar event was removed again. Nothing is booked - please try again shortly.', error: p.saveError });\nreturn res(0, { ok: false, status: 'NEEDS_ATTENTION', action: 'book', message: 'A calendar event was created but its record could not be saved and automatic removal failed. Staff must reconcile it: event_id ' + p.appt.event_id + ' (reference ' + p.appt.reference + '). Do not tell the customer they are booked; say staff will confirm.', details: { event_id: p.appt.event_id, reference: p.appt.reference }, error: p.saveError + ' / ' + errText(r) });\n"
+      }
+    },
+    {
+      "id": "854e33d1-2272-484d-9080-b62a7233cd02",
+      "name": "Move Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        400
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleCalendarOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "e593ac9f-79f4-4a22-b870-267cb6e005d1",
+      "name": "After Move Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        400
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\n// Reschedule: event moved -> update the SAME row (route 1). Move failed -> original appointment untouched\nconst p = $('Evaluate Slot').first().json;\nconst r = $input.first().json;\nconst o = p.ctx.row;\nif (r.error || !r.id) return res(0, { ok: false, status: 'ERROR', action: 'reschedule', message: 'The calendar could not move appointment ' + o.reference + '. The original appointment on ' + o.start_local + ' is unchanged.', error: errText(r) });\nconst row = Object.assign({}, o, { start_local: p.newStart, end_local: p.newEnd, last_request_id: p.ctx.inp.request_id, updated_at: new Date().toISOString(), notes: (o.notes ? o.notes + ' | ' : '') + 'Rescheduled from ' + o.start_local + ' to ' + p.newStart });\nconst toIso = s => s.replace(' ', 'T') + ':00-07:00';\nreturn res(1, null, { orig: o, row, http: { url: 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + enc((String(p.ctx.fault).startsWith('row_update') ? 'FaultInjection' : 'Appointments') + '!A' + o._row + ':Q' + o._row) + '?valueInputOption=RAW', body: { values: [HEAD.map(h => row[h])] } },\n  revert: { url: CAL(p.ctx.calendarId) + '/' + enc(p.ctx.fault === 'row_update_and_revert' ? 'fault-injection-invalid-event' : o.event_id), body: { start: { dateTime: toIso(o.start_local), timeZone: 'America/Phoenix' }, end: { dateTime: toIso(o.end_local), timeZone: 'America/Phoenix' } } } });\n"
+      }
+    },
+    {
+      "id": "1a53821d-48b0-4202-be29-9775fdd5bfee",
+      "name": "Route Move",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1980,
+        400
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.route }}"
+      }
+    },
+    {
+      "id": "cc64df78-cfea-4188-9e69-6b7e9e0bdc8a",
+      "name": "Update Row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        500
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleSheetsOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "1b444b9f-bdbd-4525-95fb-c74302be9d04",
+      "name": "After Update Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        500
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\nconst p = $('After Move Event').first().json;\nconst r = $input.first().json;\nconst a = p.row, o = p.orig;\nif (!r.error) return res(0, { ok: true, status: 'RESCHEDULED', action: 'reschedule', message: 'Appointment ' + a.reference + ' rescheduled: ' + a.pet_name + \"'s \" + a.service_name + ' with ' + a.provider + ' moved from ' + o.start_local + ' to ' + a.start_local.slice(0,10) + ' at ' + a.start_local.slice(11) + '-' + a.end_local.slice(11) + ' (' + TZNOTE + '). The reference stays the same.', details: { reference: a.reference, email: a.email, pet_name: a.pet_name, service_name: a.service_name, provider: a.provider, date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), previous: o.start_local, timezone: 'America/Phoenix' } });\nreturn res(1, null, { saveError: errText(r) || 'row update failed', http: p.revert });\n"
+      }
+    },
+    {
+      "id": "e227420b-4242-49b3-a71b-d0314eb864a5",
+      "name": "Route Update",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2640,
+        500
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.route }}"
+      }
+    },
+    {
+      "id": "80c71118-b52f-43a9-b5ac-6e7ce7b134c9",
+      "name": "Revert Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        600
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleCalendarOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "ab5e3e80-3927-46bd-878d-439a2016d597",
+      "name": "After Revert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        600
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\nconst p = $('After Move Event').first().json;\nconst q = $('After Update Row').first().json;\nconst r = $input.first().json;\nconst o = p.orig;\nif (!r.error) return res(0, { ok: false, status: 'ERROR', action: 'reschedule', message: 'The new time could not be saved, so the calendar was moved back. The original appointment ' + o.reference + ' on ' + o.start_local + ' is unchanged.', error: q.saveError });\nreturn res(0, { ok: false, status: 'NEEDS_ATTENTION', action: 'reschedule', message: 'Appointment ' + o.reference + ' was moved in the calendar but its record could not be updated and the move could not be undone. Staff must reconcile event_id ' + o.event_id + '.', details: { reference: o.reference, event_id: o.event_id }, error: q.saveError + ' / ' + errText(r) });\n"
+      }
+    },
+    {
+      "id": "63835e60-c355-4d86-b0a7-f3e9119834a4",
+      "name": "Delete Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        700
+      ],
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "options": {}
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleCalendarOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "29ff7e99-a196-4419-b887-2caf902f7623",
+      "name": "After Delete Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\n// Cancel: only mark the row CANCELED after the calendar deletion succeeded\nconst p = $('Validate Request').first().json;\nconst r = $input.first().json;\nconst err = errText(r);\nconst gone = /\\b410\\b|has been deleted/i.test(err);   // event was removed outside the system\nif (r.error && !gone) return res(0, { ok: false, status: 'ERROR', action: 'cancel', message: 'The calendar could not cancel appointment ' + p.ctx.row.reference + ', so it is still active. Please try again shortly or ask for staff help.', error: err });\nconst row = Object.assign({}, p.ctx.row, { status: 'CANCELED', last_request_id: p.ctx.inp.request_id, updated_at: new Date().toISOString(), notes: (p.ctx.row.notes ? p.ctx.row.notes + ' | ' : '') + 'Canceled via AI front desk' + (gone && r.error ? ' (event already absent)' : '') });\nreturn res(1, null, { row, http: { url: 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + enc((p.ctx.fault === 'cancel_row_update' ? 'FaultInjection' : 'Appointments') + '!A' + row._row + ':Q' + row._row) + '?valueInputOption=RAW', body: { values: [HEAD.map(h => row[h])] } } });\n"
+      }
+    },
+    {
+      "id": "c73f65ed-7ab1-4fb7-a2ee-e238166a382f",
+      "name": "Route Delete",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1320,
+        700
+      ],
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 2,
+        "output": "={{ $json.route }}"
+      }
+    },
+    {
+      "id": "81223a4a-c3ce-4909-bb89-e809ff6359ad",
+      "name": "Mark Row Canceled",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        800
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.http.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "googleSheetsOAuth2Api"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "d4bf7f99-e869-4ada-a30a-e6c4a72a0c65",
+      "name": "After Mark Canceled",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        800
+      ],
+      "parameters": {
+        "jsCode": "// ----- shared helpers -----\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst HEAD = ['reference','owner_name','email','pet_name','species','service_id','provider','start_local','end_local','event_id','status','request_id','last_request_id','service_name','created_at','updated_at','notes'];\nconst enc = encodeURIComponent;\nconst CAL = id => 'https://www.googleapis.com/calendar/v3/calendars/' + enc(id) + '/events';\nconst GENERIC_VERIFY = 'We could not verify that booking reference and email combination. Please check both and try again, or ask for a staff member to help.';\nconst TZNOTE = 'America/Phoenix clinic time';\nconst res = (route, result, extra) => [{ json: Object.assign({ route, result: result || null }, extra || {}) }];\nconst errText = r => { const e = r && r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim() || JSON.stringify(e).slice(0, 300); };\nconst bookedResult = (a, replay) => ({ ok: true, status: 'BOOKED', action: 'book', replayed: !!replay,\n  message: (replay ? 'This request was already booked earlier; returning the existing booking (no duplicate created). ' : 'Appointment booked. ') +\n    'Reference ' + a.reference + ': ' + a.pet_name + ' (' + a.species + ') - ' + a.service_name + ' (' + a.service_id + ') with ' + a.provider +\n    ' on ' + a.start_local.slice(0,10) + ' from ' + a.start_local.slice(11) + ' to ' + a.end_local.slice(11) + ' (' + TZNOTE + ').',\n  details: { reference: a.reference, email: a.email, pet_name: a.pet_name, species: a.species, service_id: a.service_id, service_name: a.service_name, provider: a.provider,\n    date: a.start_local.slice(0,10), time: a.start_local.slice(11), end_time: a.end_local.slice(11), timezone: 'America/Phoenix', event_id: a.event_id } });\n\nconst p = $('After Delete Event').first().json;\nconst r = $input.first().json;\nconst a = p.row;\nconst wasMissing = /event already absent/.test(a.notes);\nif (!r.error) return res(0, { ok: true, status: 'CANCELED', action: 'cancel', consistency_warning: wasMissing ? 'Calendar event was already missing before cancellation (removed outside this system); record closed and flagged for staff review.' : undefined, message: 'Appointment ' + a.reference + ' is canceled: ' + a.pet_name + \"'s \" + a.service_name + ' with ' + a.provider + ' on ' + a.start_local.slice(0,10) + ' at ' + a.start_local.slice(11) + ' (' + TZNOTE + '). ' + (wasMissing ? 'Note: its calendar event had already been removed outside our system, so we closed the record and flagged it for staff review.' : 'The calendar event has been removed.'), details: { reference: a.reference, email: a.email, pet_name: a.pet_name, service_name: a.service_name, provider: a.provider, date: a.start_local.slice(0,10), time: a.start_local.slice(11), timezone: 'America/Phoenix' } });\nreturn res(0, { ok: false, status: 'NEEDS_ATTENTION', action: 'cancel', message: 'The calendar event for ' + a.reference + ' was removed, but the record could not be updated to CANCELED. Staff must reconcile it (event_id ' + a.event_id + ').', details: { reference: a.reference, event_id: a.event_id }, error: errText(r) });\n"
+      }
+    },
+    {
+      "id": "414aa7b0-03fb-4026-b018-89a26bc2d892",
+      "name": "Tool Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Single exit: the JSON returned to the AI agent\nconst r = $input.first().json.result || { ok: false, status: 'ERROR', message: 'Engine produced no result.' };\nreturn [{ json: r }];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Engine Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Config & Appointments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Config & Appointments": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Route Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Validation": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Calendar": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Slot": {
+      "main": [
+        [
+          {
+            "node": "Route Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Move Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Event": {
+      "main": [
+        [
+          {
+            "node": "After Create Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Create Event": {
+      "main": [
+        [
+          {
+            "node": "Route Create",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Create": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Appointment Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Appointment Row": {
+      "main": [
+        [
+          {
+            "node": "After Save Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Save Row": {
+      "main": [
+        [
+          {
+            "node": "Route Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Save": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rollback Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rollback Event": {
+      "main": [
+        [
+          {
+            "node": "After Rollback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Rollback": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move Event": {
+      "main": [
+        [
+          {
+            "node": "After Move Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Move Event": {
+      "main": [
+        [
+          {
+            "node": "Route Move",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Move": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Row": {
+      "main": [
+        [
+          {
+            "node": "After Update Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Update Row": {
+      "main": [
+        [
+          {
+            "node": "Route Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Update": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Revert Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revert Event": {
+      "main": [
+        [
+          {
+            "node": "After Revert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Revert": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Event": {
+      "main": [
+        [
+          {
+            "node": "After Delete Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Delete Event": {
+      "main": [
+        [
+          {
+            "node": "Route Delete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Delete": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Row Canceled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Row Canceled": {
+      "main": [
+        [
+          {
+            "node": "After Mark Canceled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Mark Canceled": {
+      "main": [
+        [
+          {
+            "node": "Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
