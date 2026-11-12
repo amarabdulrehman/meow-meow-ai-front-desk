@@ -40,10 +40,12 @@ button:disabled{opacity:.6;cursor:default}
       if (d.state === 'paid') return closed('✅🐾', 'This deposit is already paid', 'Your appointment ' + REF + ' is confirmed. See you soon!');
       if (d.state !== 'pay') return closed('🐾', d.state === 'invalid' ? 'This payment link is not valid' : 'This booking no longer needs a deposit', 'Please check the link from your chat or email, or contact the clinic.');
       var sym = d.currency === 'USD' ? '$' : d.currency + ' ';
-      card.innerHTML = '<div class="b">🐾</div><h1>Confirm your appointment</h1><p class="sub">Refundable no-show deposit</p>' +
+      var bill = d.kind === 'bill';
+      card.innerHTML = '<div class="b">🐾</div><h1>' + (bill ? 'Pay your visit bill' : 'Confirm your appointment') + '</h1><p class="sub">' + (bill ? 'Approved by clinic staff · deposit already credited' : 'Refundable no-show deposit') + '</p>' +
         '<div class="sum"><div class="amt">' + esc(sym + d.amount) + '</div>Booking <span class="r">' + esc(REF) + '</span><br>' + esc(d.what) + '<br>' + esc(d.appt) + ' (clinic time)</div>' +
-        '<div id="dropin"></div><button id="pay" disabled>Pay deposit</button><div id="m" class="msg" role="alert"></div>' +
-        '<p class="pol">Cancel at least 24 hours before your visit and this deposit is refunded automatically. Sandbox test card: 4111 1111 1111 1111, any future date, any CVV.</p>' + brand();
+        '<div id="dropin"></div><button id="pay" disabled>' + (bill ? 'Pay bill' : 'Pay deposit') + '</button><div id="m" class="msg" role="alert"></div>' +
+        '<p class="pol">' + (bill ? 'An itemized bill was emailed to you.' : 'Cancel at least 24 hours before your visit and this deposit is refunded automatically.') + ' Sandbox test card: 4111 1111 1111 1111, any future date, any CVV.</p>' + brand();
+      var LABEL = bill ? 'Pay bill' : 'Pay deposit';
       var btn = document.getElementById('pay'), m = document.getElementById('m');
       function bad(t) { m.className = 'msg bad'; m.textContent = t; }
       if (!d.clientToken) return bad('Payments are temporarily unavailable. Your booking is still held - please try again shortly.');
@@ -53,16 +55,16 @@ button:disabled{opacity:.6;cursor:default}
         btn.onclick = function () {
           btn.disabled = true; btn.textContent = 'Processing…';
           inst.requestPaymentMethod(function (e, p) {
-            if (e) { btn.disabled = false; btn.textContent = 'Pay deposit'; return; }
+            if (e) { btn.disabled = false; btn.textContent = LABEL; return; }
             fetch(API + '/mmvh-pay-submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: REF, k: K, nonce: p.nonce }) })
               .then(function (r) { return r.json(); })
               .then(function (j) {
                 if (j.ok) {
-                  card.innerHTML = '<div class="b">✅🐾</div><h1>Deposit received - you\'re confirmed!</h1><p class="sub">Booking <span class="r">' + esc(REF) + '</span></p>' +
+                  card.innerHTML = '<div class="b">✅🐾</div><h1>' + (bill ? 'Payment received - thank you!' : 'Deposit received - you\'re confirmed!') + '</h1><p class="sub">Booking <span class="r">' + esc(REF) + '</span></p>' +
                     '<div class="sum">Transaction ' + esc(j.transaction_id) + '<br>A receipt has been emailed to you.</div><p class="pol">Cancel 24h+ before your visit and the deposit is refunded automatically.</p>' + brand();
-                } else { bad(j.message || 'Payment failed.'); inst.clearSelectedPaymentMethod(); btn.disabled = false; btn.textContent = 'Pay deposit'; }
+                } else { bad(j.message || 'Payment failed.'); inst.clearSelectedPaymentMethod(); btn.disabled = false; btn.textContent = LABEL; }
               })
-              .catch(function () { bad('Network error - please try again. You will not be charged twice.'); btn.disabled = false; btn.textContent = 'Pay deposit'; });
+              .catch(function () { bad('Network error - please try again. You will not be charged twice.'); btn.disabled = false; btn.textContent = LABEL; });
           });
         };
       });

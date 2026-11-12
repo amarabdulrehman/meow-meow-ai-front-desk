@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meow Meow · Staff Console</title>
+<style>
+:root{--ink:#1f2937;--mut:#6b7280;--line:#e5e7eb;--brand:#9a3412;--pp:#003087;--bg:#fff7ed}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:linear-gradient(160deg,#fff7ed,#fde7d2);color:var(--ink);min-height:100vh}
+header{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;background:#1c1917;color:#fff}
+header b{font-size:18px}header span{font-size:13px;color:#d6d3d1}
+main{max-width:1100px;margin:24px auto;padding:0 18px;display:grid;grid-template-columns:1fr 1.25fr;gap:20px}
+@media(max-width:860px){main{grid-template-columns:1fr}}
+.card{background:#fff;border-radius:18px;box-shadow:0 10px 30px #7c2d1214;padding:22px}
+h2{margin:0 0 4px;font-size:18px}.sub{color:var(--mut);font-size:13px;margin:0 0 16px}
+label{display:block;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:12px 0 6px}
+input,textarea,select{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fff}
+textarea{min-height:130px;resize:vertical}
+.row{display:flex;gap:10px}.row>*{flex:1}
+button{border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:700;cursor:pointer}
+.ai{background:linear-gradient(90deg,#7c3aed,#2563eb);color:#fff;width:100%;margin-top:14px}
+.pp{background:var(--pp);color:#fff;width:100%;margin-top:14px}
+.ghost{background:#f3f4f6;color:var(--ink)}
+button:disabled{opacity:.55;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;color:var(--mut);letter-spacing:.04em}td.num,th.num{text-align:right}
+td input,td select{padding:6px 8px}.ev{display:block;font-size:11px;color:var(--mut);margin-top:3px}
+.x{background:none;color:#b91c1c;padding:4px 8px}
+.tot{margin-top:12px;font-size:15px}.tot div{display:flex;justify-content:space-between;padding:3px 0}.tot .bal{font-size:22px;font-weight:800;color:var(--brand)}
+.chip{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;margin:3px 4px 0 0}
+.warn{background:#fef3c7;color:#92400e}.unm{background:#e0e7ff;color:#3730a3}
+.msg{margin-top:12px;padding:11px 12px;border-radius:10px;display:none;font-size:14px}.ok{background:#dcfce7;color:#166534;display:block}.bad{background:#fee2e2;color:#991b1b;display:block}
+.empty{color:var(--mut);text-align:center;padding:50px 10px;font-size:14px}
+.pill{font-size:11px;background:#ede9fe;color:#5b21b6;border-radius:999px;padding:3px 8px;font-weight:700}
+.foot{grid-column:1/-1;font-size:12px;color:var(--mut);text-align:center}
+</style>
+</head>
+<body>
+<header><div><b>🐾 Meow Meow · Staff Console</b><br><span>AI visit billing · PayPal Braintree · human approval required</span></div><span id="who">Staff only</span></header>
+<main>
+  <section class="card">
+    <h2>1 · Visit notes</h2>
+    <p class="sub">Type what happened in plain words. The AI only proposes billing codes from the clinic price list — prices are applied by the system, and nothing is sent until you approve.</p>
+    <div class="row"><div><label for="pin">Staff PIN</label><input id="pin" type="password" autocomplete="off" placeholder="••••"></div>
+      <div><label for="ref">Booking reference</label><input id="ref" placeholder="MMVH-ABC123" autocomplete="off"></div></div>
+    <label for="notes">Vet's notes</label>
+    <textarea id="notes" placeholder="e.g. Bruno looked great. Gave rabies booster, trimmed nails and cleaned both ears. Owner asked about microchip - not done today."></textarea>
+    <button class="ai" id="draft">✨ Draft bill with AI</button>
+    <div id="m1" class="msg" role="alert"></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:22px 0">
+    <h2>Unpaid holds</h2>
+    <p class="sub">Bookings whose deposit was not paid in time are released automatically every 15 minutes. You can also run it now.</p>
+    <div class="row"><div><label for="hold">Older than (minutes)</label><input id="hold" type="number" min="0" value="120"></div><div style="display:flex;align-items:flex-end"><button class="ghost" id="sweep" style="width:100%">Release expired holds</button></div></div>
+    <div id="m3" class="msg" role="status"></div>
+  </section>
+  <section class="card" id="billCard">
+    <h2>2 · Review &amp; approve <span class="pill">AI draft</span></h2>
+    <p class="sub" id="who2">Draft a bill to review it here.</p>
+    <div id="bill"><div class="empty">No draft yet.</div></div>
+  </section>
+  <p class="foot">The AI never sets prices, discounts or amounts. Totals are recomputed on the server from the price list when you approve; the deposit already paid is credited automatically.</p>
+</main>
+<script>
+(function(){
+  var API='https://amarabdulrehman.app.n8n.cloud/webhook', D=null;
+  var $=function(id){return document.getElementById(id);};
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function msg(el,cls,t){el.className='msg '+cls;el.textContent=t;}
+  function post(path,body){return fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json();});}
+  var q=new URLSearchParams(location.search); if(q.get('ref')) $('ref').value=q.get('ref');
+  function money(n){return '$'+(Math.round(n*100)/100).toFixed(2);}
+  function totals(){
+    if(!D) return; var sub=0; D.items.forEach(function(x){sub+=x.qty*x.unit;});
+    var dep=+D.deposit||0, bal=Math.max(0,sub-dep);
+    $('t-sub').textContent=money(sub); $('t-dep').textContent='−'+money(dep); $('t-bal').textContent=money(bal);
+    $('approve').textContent=bal>0?'Approve & send '+money(bal)+' payment link':'Approve (covered by deposit)';
+  }
+  function render(){
+    var a=D.appt; $('who2').textContent=a.reference+' · '+a.pet+' ('+a.species+') · '+a.owner+' · '+a.start;
+    var opts=D.catalog.map(function(c){return '<option value="'+esc(c.code)+'">'+esc(c.name)+' ($'+c.unit+')</option>';}).join('');
+    var rows=D.items.map(function(x,i){return '<tr><td><select data-i="'+i+'" class="code">'+opts.replace('value="'+esc(x.code)+'"','value="'+esc(x.code)+'" selected')+'</select>'+(x.evidence?'<span class="ev">“'+esc(x.evidence)+'”</span>':'')+'</td>'+
+      '<td class="num" style="width:70px"><input data-i="'+i+'" class="qty" type="number" min="1" max="10" value="'+x.qty+'"></td><td class="num">'+money(x.qty*x.unit)+'</td><td style="width:34px"><button class="x" data-i="'+i+'" title="Remove line" aria-label="Remove line">✕</button></td></tr>';}).join('');
+    var chips=(D.unmatched||[]).map(function(u){return '<span class="chip unm">Not on price list: '+esc(u)+'</span>';}).join('')+(D.warnings||[]).map(function(w){return '<span class="chip warn">⚠ '+esc(w)+'</span>';}).join('');
+    $('bill').innerHTML='<table><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Amount</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      '<button class="ghost" id="add" style="margin-top:8px">+ Add line</button><div style="margin-top:8px">'+chips+'</div>'+
+      '<label for="sum">Message to the owner (AI-written, editable)</label><textarea id="sum" style="min-height:80px">'+esc(D.owner_summary)+'</textarea>'+
+      '<div class="tot"><div><span>Subtotal</span><span id="t-sub"></span></div><div><span>Deposit already paid</span><span id="t-dep"></span></div><div class="bal"><span>Balance due</span><span id="t-bal"></span></div></div>'+
+      '<button class="pp" id="approve"></button><div id="m2" class="msg" role="alert"></div>';
+    totals();
+    Array.prototype.forEach.call(document.querySelectorAll('.code'),function(s){s.onchange=function(){var c=D.catalog.filter(function(k){return k.code===s.value;})[0];var x=D.items[+s.dataset.i];x.code=c.code;x.name=c.name;x.unit=c.unit;x.evidence='';render();};});
+    Array.prototype.forEach.call(document.querySelectorAll('.qty'),function(s){s.oninput=function(){D.items[+s.dataset.i].qty=Math.max(1,Math.min(10,parseInt(s.value,10)||1));totals();};s.onchange=render;});
+    Array.prototype.forEach.call(document.querySelectorAll('.x'),function(b){b.onclick=function(){D.items.splice(+b.dataset.i,1);render();};});
+    $('add').onclick=function(){var c=D.catalog[0];D.items.push({code:c.code,name:c.name,unit:c.unit,qty:1,evidence:''});render();};
+    $('approve').onclick=function(){
+      var b=$('approve'); b.disabled=true; b.textContent='Sending…';
+      post('/mmvh-bill-approve',{pin:$('pin').value,reference:D.appt.reference,owner_summary:$('sum').value,items:D.items.map(function(x){return{code:x.code,qty:x.qty};})})
+        .then(function(j){ if(j.ok){ msg($('m2'),'ok','✓ '+j.message+'. Subtotal $'+j.subtotal+', deposit credit $'+j.deposit+', balance $'+j.balance+(+j.balance>0?' — PayPal Braintree payment link emailed.':' — nothing more to pay.')); b.textContent='Sent ✓'; }
+          else { msg($('m2'),'bad',j.message||'Could not send the bill.'); b.disabled=false; totals(); } })
+        .catch(function(){ msg($('m2'),'bad','Network error — please try again.'); b.disabled=false; totals(); });
+    };
+  }
+  $('draft').onclick=function(){
+    var b=$('draft'); if(!$('pin').value||!$('ref').value||!$('notes').value.trim()) return msg($('m1'),'bad','Please enter the PIN, booking reference and notes.');
+    b.disabled=true; b.textContent='✨ Reading notes…'; $('m1').className='msg';
+    post('/mmvh-bill-draft',{pin:$('pin').value,reference:$('ref').value.trim(),notes:$('notes').value})
+      .then(function(j){ if(!j.ok) return msg($('m1'),'bad',j.message||'Could not draft the bill.'); D=j; render(); })
+      .catch(function(){ msg($('m1'),'bad','Network error — please try again.'); })
+      .finally(function(){ b.disabled=false; b.textContent='✨ Draft bill with AI'; });
+  };
+  $('sweep').onclick=function(){
+    var b=$('sweep'); if(!$('pin').value) return msg($('m3'),'bad','Enter the staff PIN first.');
+    b.disabled=true; post('/mmvh-hold-sweep',{pin:$('pin').value,hold_minutes:+$('hold').value})
+      .then(function(j){ msg($('m3'),j.ok?'ok':'bad',j.message||'Done.'); })
+      .catch(function(){ msg($('m3'),'bad','Network error — please try again.'); })
+      .finally(function(){ b.disabled=false; });
+  };
+})();
+</script>
+</body>
+</html>

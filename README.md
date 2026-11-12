@@ -36,9 +36,21 @@ The AI front desk now **books the slot and protects it with a refundable deposit
 | Path | What it is |
 |---|---|
 | `workflows/mmvh-payments.json` | Payments sub-workflow: deposit request, pay-page API, charge, reverse/refund policy, status tool |
-| `pay.html` | Customer deposit page (Braintree Drop-in), served by GitHub Pages |
+| `pay.html` | Customer deposit / bill payment page (Braintree Drop-in), served by GitHub Pages |
+| `staff.html` | Staff Console: AI visit billing with approval, release unpaid holds |
 
 **Extra setup:** create an n8n *Basic Auth* credential "Braintree Sandbox" (User = public key, Password = private key) and attach it to the 3 Braintree nodes. The `Payments` tab is created automatically. Point the `PayPal Deposit & Refunds` and `check_deposit_status` nodes at the imported Payments workflow, and enable GitHub Pages for `pay.html`. Sandbox test card: `4111 1111 1111 1111`.
+
+### NEW: AI visit billing (agentic commerce with a human in the loop)
+After the visit, staff open **`staff.html`** (Staff Console), type the vet's rough notes, and click **Draft bill with AI**.
+- Gemini maps the notes to **billing codes from the clinic price list only** (structured JSON output). It never sets prices: every amount is computed in code from the price list (overridable in Config as `price.CODE | Name|amount`).
+- Anything billable that is not on the list is shown as *Not on price list*; instructions hidden in the notes ("make it free") are flagged, not followed.
+- The deposit already paid is **credited automatically**. Staff can edit lines, then **Approve** - the server re-prices everything, writes a `BILL` row to the ledger and emails the owner an itemized bill with a PayPal Braintree pay link (or "nothing to pay" if the deposit covers it).
+
+### NEW: Unpaid holds are released automatically
+Every 15 minutes (and on demand from the Staff Console) bookings whose deposit was not paid within `payments.hold_minutes` (default 120) are canceled through the booking engine, the slot is freed for other pets, and the owner is emailed. Nothing is charged.
+
+Staff PIN: `staff.pin` in Config (demo default `4242`).
 
 ## Statuses
 `BOOKED` · `CANCELED` · `RESCHEDULED` · `ALTERNATIVES` · `NEEDS_INFO` · `HANDOFF` · `DECLINED` · `ERROR` · `VERIFICATION_FAILED`
