@@ -1,0 +1,1160 @@
+{
+ "name": "MMVH Payments (PayPal Braintree)",
+ "nodes": [
+  {
+   "id": "0621493f-4fa5-4a5a-960c-a5386f10a331",
+   "name": "Note",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -80,
+    -330
+   ],
+   "parameters": {
+    "width": 760,
+    "height": 250,
+    "content": "## MMVH Payments - PayPal Braintree (sandbox)\n**AI-booked appointments with no-show protection.** The AI agent books; then *code* (never the model) creates a refundable deposit request and a secure pay link.\n- **Pay page** static `pay.html` (GitHub Pages) + `/webhook/mmvh-pay` - ledger lookup + Braintree client token (GraphQL); Drop-in card form\n- **Submit** `/webhook/mmvh-pay-submit` - `chargePaymentMethod`, ledger -> PAID, emailed receipt\n- **Cancel** >= 24h before visit -> automatic `reverseTransaction` (refund/void); later -> deposit kept\n- **Ledger**: `Payments` tab. Amount always comes from the server-side ledger, never from the browser."
+   }
+  },
+  {
+   "id": "51186797-13a1-44fa-94f6-d72793ab59b3",
+   "name": "From Front Desk",
+   "type": "n8n-nodes-base.executeWorkflowTrigger",
+   "typeVersion": 1.1,
+   "position": [
+    0,
+    300
+   ],
+   "parameters": {
+    "inputSource": "passthrough"
+   }
+  },
+  {
+   "id": "7a551aef-bae6-4c98-a15c-e0617c9854b0",
+   "name": "Plan Payment",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    220,
+    300
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst f = $input.first().json;\nconst d = f.details || {};\nlet op = 'none';\nif (f.op === 'status') op = 'status';\nelse if (f.result_status === 'BOOKED' && d.reference && f.notify_email) op = 'deposit';   // new booking (not an idempotent replay)\nelse if (f.result_status === 'CANCELED' && (d.reference || f.reference)) op = 'cancel';\nreturn [{ json: Object.assign({}, f, { pay_op: op, pay_ref: d.reference || f.reference || '' }) }];\n"
+   }
+  },
+  {
+   "id": "4821ec78-ea0b-4c95-b2ae-ea55be5aceb2",
+   "name": "Route Payment",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3.2,
+   "position": [
+    440,
+    300
+   ],
+   "parameters": {
+    "mode": "expression",
+    "numberOutputs": 4,
+    "output": "={{ ({none:0, deposit:1, cancel:2, status:3})[$json.pay_op] ?? 0 }}"
+   }
+  },
+  {
+   "id": "90f694a4-693f-4bb4-ad40-fb75a21e2d44",
+   "name": "No Payment Change",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    680,
+    80
+   ],
+   "parameters": {
+    "jsCode": "return [{ json: $('Plan Payment').first().json }];"
+   }
+  },
+  {
+   "id": "4cde3225-426d-4143-a925-ea3aa24bcf9c",
+   "name": "Ensure Payments Tab",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    680,
+    260
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID:batchUpdate",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {},
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "{\"requests\":[{\"addSheet\":{\"properties\":{\"title\":\"Payments\"}}}]}"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "e1518e14-7860-40bb-bc8f-8d31baa07912",
+   "name": "Write Ledger Header",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    900,
+    260
+   ],
+   "parameters": {
+    "method": "PUT",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values/Payments!A1:L1?valueInputOption=RAW",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {},
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({values:[['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes']]}) }}"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "d271e1a6-2c3a-4c4b-a90b-92c62c3ca57b",
+   "name": "Build Deposit Row",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1120,
+    260
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst f = $('Plan Payment').first().json; const d = f.details || {};\nconst key = Array.from({ length: 24 }, () => 'abcdefghijkmnpqrstuvwxyz23456789'[Math.floor(Math.random() * 32)]).join('');   // unguessable link secret\nconst url = 'https://amarabdulrehman.github.io/meow-meow-ai-front-desk/pay.html?ref=' + encodeURIComponent(f.pay_ref) + '&k=' + key;\nconst row = [f.pay_ref, d.email || f.notify_email, DEPOSIT, CURRENCY, key, 'PENDING', '', (d.date || '') + ' ' + (d.time || ''), nowIso(), '', url, (d.pet_name || '') + ' - ' + (d.service_name || '')];\nreturn [{ json: { url, http: { url: 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A:L') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', body: { values: [row] } } } }];\n"
+   }
+  },
+  {
+   "id": "a46fdc63-3c22-434e-a8a9-5ddda70d0904",
+   "name": "Save Payment Row",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1340,
+    260
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $json.http.url }}",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {},
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "e23ba7d0-84e6-456b-bea3-47e29c56ce0c",
+   "name": "Deposit Result",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1560,
+    260
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst f = Object.assign({}, $('Plan Payment').first().json);\nconst b = $('Build Deposit Row').first().json;\nconst r = $input.first().json;\nif (!r.error && r.updates) {\n  f.pay_url = b.url; f.payment_status = 'PENDING';\n  f.response += '\\n\\nTo protect your slot, please pay the refundable $' + DEPOSIT + ' deposit securely (PayPal Braintree): ' + b.url +\n    '\\nIt is refunded automatically if you cancel at least ' + REFUND_WINDOW_H + ' hours before your visit.';\n  f.notes = (f.notes ? f.notes + ' | ' : '') + 'Deposit requested (PENDING)';\n} else {\n  f.payment_status = 'LINK_FAILED';\n  f.response += '\\n\\nYour booking is saved. We could not create the deposit link right now; our staff will send it to you.';\n  f.notes = (f.notes ? f.notes + ' | ' : '') + 'Deposit ledger write FAILED: ' + errText(r);\n}\nreturn [{ json: f }];\n"
+   }
+  },
+  {
+   "id": "0f8e3eec-8235-426d-a435-dbe4ac055e32",
+   "name": "Read Payments (cancel)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    680,
+    520
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values:batchGet?ranges=Config!A:C&ranges=Payments!A:L",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "a24bed2d-45f0-4592-9704-3f24f07ab537",
+   "name": "Refund Decision",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    900,
+    520
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\n// The model never decides money movement: policy is code.\nconst f = $('Plan Payment').first().json;\nconst r = $input.first().json;\nconst vr = r.valueRanges || [];\nconst kv = {}; for (const x of ((vr[0] && vr[0].values) || []).slice(1)) if (x && x[0]) kv[String(x[0]).trim()] = String(x[1] || '').trim();\nconst rows = (vr[1] && vr[1].values) || [];\nconst toMs = s => { const m = /^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2})/.exec(String(s || '')); return m ? Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5]) : null; };\nconst window_h = Number(kv['payments.refund_window_hours'] || REFUND_WINDOW_H);\nlet idx = -1; for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === f.pay_ref && ['PAID', 'PENDING'].includes(rows[i][5])) { idx = i; break; }\nif (r.error || idx < 0) return [{ json: { decision: 'none', reason: r.error ? 'ledger unreadable' : 'no active deposit' } }];\nconst row = rows[idx];\nconst start = toMs(row[7]), now = toMs(kv['clinic.arena_now']);   // same clinic clock as the booking engine\nconst hoursLeft = (start !== null && now !== null) ? (start - now) / 3600000 : null;\nconst decision = row[5] === 'PENDING' ? 'void' : (hoursLeft !== null && hoursLeft >= window_h ? 'refund' : 'keep');\nreturn [{ json: { decision, rowNum: idx + 1, row, hoursLeft, window_h, txn: row[6] || '' } }];\n"
+   }
+  },
+  {
+   "id": "3075290a-cf49-4ecc-857c-7bbac410cd8f",
+   "name": "Refund?",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3.2,
+   "position": [
+    1120,
+    520
+   ],
+   "parameters": {
+    "mode": "expression",
+    "numberOutputs": 2,
+    "output": "={{ $json.decision === 'refund' && $json.txn ? 1 : 0 }}"
+   }
+  },
+  {
+   "id": "aa46a431-69cb-48cb-be3a-606e7737fc28",
+   "name": "Braintree Reverse",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1340,
+    620
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://payments.sandbox.braintree-api.com/graphql",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpBasicAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Braintree-Version",
+       "value": "2019-01-01"
+      },
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ query: 'mutation Rev($input: ReverseTransactionInput!) { reverseTransaction(input: $input) { reversal { __typename ... on Transaction { id status } ... on Refund { id status } } } }', variables: { input: { transactionId: $json.txn } } }) }}",
+    "options": {}
+   },
+   "credentials": {
+    "httpBasicAuth": {
+     "id": "REPLACE_ME",
+     "name": "Braintree Sandbox"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "1bbd6e49-0e0e-49a4-b5e5-5e5d6dcd26da",
+   "name": "Build Cancel Update",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1560,
+    520
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst D = $('Refund Decision').first().json;\nif (D.decision === 'none') return [{ json: { skip: true, D } }];\nlet rv = null; try { rv = $('Braintree Reverse').first().json; } catch (e) {}\nlet status, rid = '', note;\nif (D.decision === 'void') { status = 'VOIDED'; note = 'Canceled before payment'; }\nelse if (D.decision === 'keep') { status = 'KEPT_LATE_CANCEL'; note = 'Canceled ' + (D.hoursLeft === null ? '?' : D.hoursLeft.toFixed(1)) + 'h before visit (< ' + D.window_h + 'h)'; }\nelse { const rev = rv && rv.data && rv.data.reverseTransaction && rv.data.reverseTransaction.reversal;\n  if (rev && rev.id) { status = 'REFUNDED'; rid = rev.id; note = 'Braintree ' + (rev.__typename === 'Refund' ? 'refund ' : 'void ') + rev.status; }\n  else { status = 'REFUND_FAILED'; note = 'Reverse error: ' + errText(rv); } }\nconst row = D.row.slice(); while (row.length < 12) row.push('');\nrow[5] = status; row[8] = nowIso(); row[9] = rid; row[11] = note;\nreturn [{ json: { skip: false, status, rid, note, http: { url: rowUrl(D.rowNum), body: { values: [row] } } } }];\n"
+   }
+  },
+  {
+   "id": "97aafc9e-0362-4d3d-a455-31818645deb3",
+   "name": "Update Payment Row",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1780,
+    520
+   ],
+   "parameters": {
+    "method": "PUT",
+    "url": "={{ $json.http ? $json.http.url : 'https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values/Payments!Z1?valueInputOption=RAW' }}",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {},
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.http ? $json.http.body : {values:[[\"\"]]}) }}"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "ef2d91a7-91f7-4123-85b1-f538b9855c67",
+   "name": "Cancel Result",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2000,
+    520
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst f = Object.assign({}, $('Plan Payment').first().json);\nconst u = $('Build Cancel Update').first().json;\nconst S = '$';\nconst msgs = {\n  REFUNDED: 'Your ' + S + DEPOSIT + ' deposit has been refunded automatically (Braintree ref ' + u.rid + ').',\n  KEPT_LATE_CANCEL: 'Because this was canceled less than ' + REFUND_WINDOW_H + ' hours before the visit, the ' + S + DEPOSIT + ' deposit is kept under our no-show policy. If this was an emergency, please contact the clinic.',\n  VOIDED: 'No deposit was paid for this booking, so nothing is charged.',\n  REFUND_FAILED: 'Your deposit refund could not be processed automatically; our staff have been alerted and will refund it manually.'\n};\nif (!u.skip) { f.payment_status = u.status; if (msgs[u.status]) f.response += '\\n\\n' + msgs[u.status]; f.notes = (f.notes ? f.notes + ' | ' : '') + 'Deposit ' + u.status + ': ' + u.note; }\nreturn [{ json: f }];\n"
+   }
+  },
+  {
+   "id": "3f0081e0-3685-4cf7-8aa1-d638bbcca72f",
+   "name": "Read Payments (status)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    680,
+    760
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values/Payments!A:L",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "b58c0b53-7d56-4740-bf9f-ddbdd93b9d62",
+   "name": "Status Result",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    900,
+    760
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst f = $('Plan Payment').first().json;\nconst rows = $input.first().json.values || [];\nconst ref = String(f.reference || '').trim().toUpperCase(), email = String(f.email || '').trim().toLowerCase();\nlet row = null; for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && String(rows[i][0]).toUpperCase() === ref) { row = rows[i]; break; }\nif (!row || String(row[1] || '').toLowerCase() !== email) return [{ json: { ok: false, status: 'VERIFICATION_FAILED', message: 'We could not verify that booking reference and email combination for a deposit.' } }];\nconst human = { PENDING: 'not paid yet', PAID: 'paid - appointment confirmed', REFUNDED: 'refunded', KEPT_LATE_CANCEL: 'kept (late cancellation)', VOIDED: 'voided (canceled before payment)', LINK_FAILED: 'link could not be created (staff will follow up)', REFUND_FAILED: 'refund pending with staff' };\nreturn [{ json: { ok: true, status: 'DEPOSIT_' + row[5], message: 'Deposit for ' + row[0] + ': ' + row[2] + ' ' + row[3] + ' - ' + (human[row[5]] || row[5]) + '.', pay_url: row[5] === 'PENDING' ? row[10] : '' } }];\n"
+   }
+  },
+  {
+   "id": "2a008b87-681d-4bc9-a5a5-ac651fdb39eb",
+   "name": "Pay Page Request",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    1100
+   ],
+   "parameters": {
+    "httpMethod": "GET",
+    "path": "mmvh-pay",
+    "responseMode": "responseNode",
+    "options": {}
+   },
+   "webhookId": "517adf94-29a6-4cd7-950d-dd6abed0dc06"
+  },
+  {
+   "id": "10d152e0-3f21-460b-81b0-1047c97f7ab9",
+   "name": "Read Payments (page)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    220,
+    1100
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values/Payments!A:L",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "0cf0c172-0b33-4e84-80d8-6fa8d1f7e1b4",
+   "name": "Check Pay Link",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    1100
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst q = $('Pay Page Request').first().json.query || {};\nconst rows = $input.first().json.values || [];\nconst i = (q.ref && q.k) ? findRow(rows, q.ref, q.k) : -1;\nconst row = i >= 0 ? rows[i] : null;\nconst state = !row ? 'invalid' : (row[5] === 'PENDING' ? 'pay' : (row[5] === 'PAID' ? 'paid' : 'closed'));\nreturn [{ json: { state, ref: q.ref || '', k: q.k || '', amount: row ? row[2] : '', currency: row ? row[3] : '', appt: row ? row[7] : '', what: row ? row[11] : '', status: row ? row[5] : '' } }];\n"
+   }
+  },
+  {
+   "id": "aac2fe06-2572-4862-8082-4a345efd1cd8",
+   "name": "Can Pay?",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3.2,
+   "position": [
+    660,
+    1100
+   ],
+   "parameters": {
+    "mode": "expression",
+    "numberOutputs": 2,
+    "output": "={{ $json.state === 'pay' ? 1 : 0 }}"
+   }
+  },
+  {
+   "id": "e6d67b9e-139d-453a-b00e-fc80462ace88",
+   "name": "Braintree Client Token",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    880,
+    1180
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://payments.sandbox.braintree-api.com/graphql",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpBasicAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Braintree-Version",
+       "value": "2019-01-01"
+      },
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ query: 'mutation { createClientToken { clientToken } }' }) }}",
+    "options": {}
+   },
+   "credentials": {
+    "httpBasicAuth": {
+     "id": "REPLACE_ME",
+     "name": "Braintree Sandbox"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "66e9ba15-49e5-4760-9345-762c23216eae",
+   "name": "Pay Data",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    1100,
+    1180
+   ],
+   "parameters": {
+    "respondWith": "text",
+    "responseBody": "={{ JSON.stringify(Object.assign({}, $('Check Pay Link').first().json, { k: undefined, clientToken: (($json.data || {}).createClientToken || {}).clientToken || '' })) }}",
+    "options": {
+     "responseHeaders": {
+      "entries": [
+       {
+        "name": "Content-Type",
+        "value": "application/json"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "10834ac3-9976-4234-a37f-e4985d1a51ac",
+   "name": "Link Closed",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    880,
+    1000
+   ],
+   "parameters": {
+    "respondWith": "text",
+    "responseBody": "={{ JSON.stringify({ state: $json.state, ref: $json.ref }) }}",
+    "options": {
+     "responseHeaders": {
+      "entries": [
+       {
+        "name": "Content-Type",
+        "value": "application/json"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "b770708d-0625-47c4-be88-007d7cbda196",
+   "name": "Pay Submit",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    1500
+   ],
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "mmvh-pay-submit",
+    "responseMode": "responseNode",
+    "options": {}
+   },
+   "webhookId": "a08575ab-efbe-4b8a-9619-296e5bbc2319"
+  },
+  {
+   "id": "fcb2bf22-304b-4ffe-a4b8-a9317bed56b0",
+   "name": "Read Payments (submit)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    220,
+    1500
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_SPREADSHEET_ID/values/Payments!A:L",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "7d03cea5-386b-42d3-9b01-14fd1f07f598",
+   "name": "Verify Submit",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    1500
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst b = $('Pay Submit').first().json.body || {};\nconst rows = $input.first().json.values || [];\nconst i = (b.ref && b.k && b.nonce) ? findRow(rows, String(b.ref), String(b.k)) : -1;\nif (i < 0) return [{ json: { ok: false, message: 'This payment link is not valid.' } }];\nif (rows[i][5] !== 'PENDING') return [{ json: { ok: false, message: rows[i][5] === 'PAID' ? 'This deposit is already paid.' : 'This booking no longer needs a deposit.' } }];\n// amount comes from the server-side ledger, never from the browser\nreturn [{ json: { ok: true, rowNum: i + 1, row: rows[i], nonce: String(b.nonce), amount: rows[i][2], ref: rows[i][0] } }];\n"
+   }
+  },
+  {
+   "id": "ce99a961-1f2b-4c3a-94b3-1b0645780583",
+   "name": "Valid?",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3.2,
+   "position": [
+    660,
+    1500
+   ],
+   "parameters": {
+    "mode": "expression",
+    "numberOutputs": 2,
+    "output": "={{ $json.ok ? 1 : 0 }}"
+   }
+  },
+  {
+   "id": "b12e2f34-e7f7-49ca-9faf-482943e69372",
+   "name": "Braintree Charge",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    880,
+    1580
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://payments.sandbox.braintree-api.com/graphql",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpBasicAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Braintree-Version",
+       "value": "2019-01-01"
+      },
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ query: 'mutation Charge($input: ChargePaymentMethodInput!) { chargePaymentMethod(input: $input) { transaction { id legacyId status amount { value currencyCode } orderId } } }', variables: { input: { paymentMethodId: $json.nonce, transaction: { amount: $json.amount, orderId: $json.ref + '-DEP' } } } }) }}",
+    "options": {}
+   },
+   "credentials": {
+    "httpBasicAuth": {
+     "id": "REPLACE_ME",
+     "name": "Braintree Sandbox"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "5c56070d-214a-4135-8e5c-cc95a6126e09",
+   "name": "Check Charge",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1100,
+    1580
+   ],
+   "parameters": {
+    "jsCode": "\nconst SHEET_ID = 'YOUR_SPREADSHEET_ID';\nconst DEPOSIT = '10.00', CURRENCY = 'USD', REFUND_WINDOW_H = 24;\nconst BASE = 'https://amarabdulrehman.app.n8n.cloud/webhook';\nconst HEAD = ['reference','email','amount','currency','pay_key','status','transaction_id','appt_start','updated_at','reversal_id','pay_url','notes'];\nconst nowIso = () => new Date().toISOString();\nconst errText = r => { if (!r) return 'no response'; if (r.errors && r.errors.length) return r.errors.map(e => e.message).join('; ').slice(0, 300); const e = r.error; if (!e) return ''; return String((e.message || '') + ' ' + (e.description || '') + ' ' + (e.httpCode || '')).trim().slice(0, 300); };\nconst rowUrl = n => 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID + '/values/' + encodeURIComponent('Payments!A' + n + ':L' + n) + '?valueInputOption=RAW';\nconst findRow = (rows, ref, key) => { for (let i = rows.length - 1; i >= 1; i--) if (rows[i] && rows[i][0] === ref && (!key || rows[i][4] === key)) return i; return -1; };\n\nconst v = $('Verify Submit').first().json;\nconst r = $input.first().json;\nconst t = r && r.data && r.data.chargePaymentMethod && r.data.chargePaymentMethod.transaction;\nconst good = t && ['AUTHORIZED', 'SUBMITTED_FOR_SETTLEMENT', 'SETTLING', 'SETTLED'].includes(t.status);\nif (!good) return [{ json: { ok: false, message: 'The payment was declined (' + (t ? t.status : errText(r)) + '). You were not charged - please try another card.' } }];\nconst row = v.row.slice(); while (row.length < 12) row.push('');\nrow[5] = 'PAID'; row[6] = t.legacyId || t.id; row[8] = nowIso(); row[11] = (row[11] ? row[11] + ' | ' : '') + 'Braintree ' + t.status + ' ' + t.amount.value + ' ' + t.amount.currencyCode;\nreturn [{ json: { ok: true, txn: row[6], email: row[1], ref: row[0], appt: row[7], amount: t.amount.value + ' ' + t.amount.currencyCode, http: { url: rowUrl(v.rowNum), body: { values: [row] } } } }];\n"
+   }
+  },
+  {
+   "id": "dcfd9fc9-5a94-4b29-a99a-de68a62788f4",
+   "name": "Charged?",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3.2,
+   "position": [
+    1320,
+    1580
+   ],
+   "parameters": {
+    "mode": "expression",
+    "numberOutputs": 2,
+    "output": "={{ $json.ok ? 1 : 0 }}"
+   }
+  },
+  {
+   "id": "0ba76a9d-4a38-4a0b-b77d-5c1e863cf519",
+   "name": "Mark Paid",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1540,
+    1660
+   ],
+   "parameters": {
+    "method": "PUT",
+    "url": "={{ $json.http.url }}",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {},
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.http.body) }}"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Google Sheets"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "58be5569-24c4-49fb-9394-08b534f7b504",
+   "name": "Email Receipt",
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    1760,
+    1660
+   ],
+   "parameters": {
+    "resource": "message",
+    "operation": "send",
+    "sendTo": "={{ $('Check Charge').first().json.email }}",
+    "subject": "={{ 'Meow Meow Veterinary Hospital - deposit received, appointment confirmed (' + $('Check Charge').first().json.ref + ')' }}",
+    "emailType": "text",
+    "message": "={{ 'Hello,\\n\\nWe received your refundable deposit of ' + $('Check Charge').first().json.amount + '. Your appointment ' + $('Check Charge').first().json.ref + ' on ' + $('Check Charge').first().json.appt + ' (America/Phoenix clinic time) is now CONFIRMED.\\n\\nTransaction: ' + $('Check Charge').first().json.txn + ' (PayPal Braintree)\\nCancel at least 24 hours before your visit and the deposit is refunded automatically.\\n\\nMeow Meow Veterinary Hospital - AI Front Desk' }}",
+    "options": {
+     "appendAttribution": false
+    }
+   },
+   "credentials": {
+    "gmailOAuth2": {
+     "id": "REPLACE_ME",
+     "name": "MMVH Gmail (krimsol)"
+    }
+   },
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "id": "b5d220b7-48d3-4e88-8515-3cbc06c1ea5f",
+   "name": "Paid OK",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    1980,
+    1660
+   ],
+   "parameters": {
+    "respondWith": "text",
+    "responseBody": "={{ JSON.stringify({ ok: true, transaction_id: $('Check Charge').first().json.txn }) }}",
+    "options": {
+     "responseHeaders": {
+      "entries": [
+       {
+        "name": "Content-Type",
+        "value": "application/json"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "fc619d4a-f0d0-4e32-93a0-f01d739fa682",
+   "name": "Charge Failed",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    1540,
+    1500
+   ],
+   "parameters": {
+    "respondWith": "text",
+    "responseBody": "={{ JSON.stringify({ ok: false, message: $json.message }) }}",
+    "options": {
+     "responseHeaders": {
+      "entries": [
+       {
+        "name": "Content-Type",
+        "value": "application/json"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "a63c4180-94af-4376-a677-77eca7f9b543",
+   "name": "Submit Rejected",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    880,
+    1420
+   ],
+   "parameters": {
+    "respondWith": "text",
+    "responseBody": "={{ JSON.stringify({ ok: false, message: $json.message }) }}",
+    "options": {
+     "responseHeaders": {
+      "entries": [
+       {
+        "name": "Content-Type",
+        "value": "application/json"
+       }
+      ]
+     }
+    }
+   }
+  }
+ ],
+ "connections": {
+  "From Front Desk": {
+   "main": [
+    [
+     {
+      "node": "Plan Payment",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Plan Payment": {
+   "main": [
+    [
+     {
+      "node": "Route Payment",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Route Payment": {
+   "main": [
+    [
+     {
+      "node": "No Payment Change",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Ensure Payments Tab",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Read Payments (cancel)",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Read Payments (status)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Ensure Payments Tab": {
+   "main": [
+    [
+     {
+      "node": "Write Ledger Header",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Write Ledger Header": {
+   "main": [
+    [
+     {
+      "node": "Build Deposit Row",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build Deposit Row": {
+   "main": [
+    [
+     {
+      "node": "Save Payment Row",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Save Payment Row": {
+   "main": [
+    [
+     {
+      "node": "Deposit Result",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Payments (cancel)": {
+   "main": [
+    [
+     {
+      "node": "Refund Decision",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Refund Decision": {
+   "main": [
+    [
+     {
+      "node": "Refund?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Refund?": {
+   "main": [
+    [
+     {
+      "node": "Build Cancel Update",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Braintree Reverse",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Braintree Reverse": {
+   "main": [
+    [
+     {
+      "node": "Build Cancel Update",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build Cancel Update": {
+   "main": [
+    [
+     {
+      "node": "Update Payment Row",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Update Payment Row": {
+   "main": [
+    [
+     {
+      "node": "Cancel Result",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Payments (status)": {
+   "main": [
+    [
+     {
+      "node": "Status Result",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay Page Request": {
+   "main": [
+    [
+     {
+      "node": "Read Payments (page)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Payments (page)": {
+   "main": [
+    [
+     {
+      "node": "Check Pay Link",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Check Pay Link": {
+   "main": [
+    [
+     {
+      "node": "Can Pay?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Can Pay?": {
+   "main": [
+    [
+     {
+      "node": "Link Closed",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Braintree Client Token",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Braintree Client Token": {
+   "main": [
+    [
+     {
+      "node": "Pay Data",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay Submit": {
+   "main": [
+    [
+     {
+      "node": "Read Payments (submit)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Payments (submit)": {
+   "main": [
+    [
+     {
+      "node": "Verify Submit",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Verify Submit": {
+   "main": [
+    [
+     {
+      "node": "Valid?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Valid?": {
+   "main": [
+    [
+     {
+      "node": "Submit Rejected",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Braintree Charge",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Braintree Charge": {
+   "main": [
+    [
+     {
+      "node": "Check Charge",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Check Charge": {
+   "main": [
+    [
+     {
+      "node": "Charged?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Charged?": {
+   "main": [
+    [
+     {
+      "node": "Charge Failed",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Mark Paid",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Paid": {
+   "main": [
+    [
+     {
+      "node": "Email Receipt",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Email Receipt": {
+   "main": [
+    [
+     {
+      "node": "Paid OK",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "errorWorkflow": "YOUR_ERROR_WORKFLOW_ID"
+ }
+}
