@@ -31,7 +31,7 @@ button:disabled{opacity:.6;cursor:default}
   var q = new URLSearchParams(location.search), REF = q.get('ref') || '', K = q.get('k') || '';
   var card = document.getElementById('card');
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-  function brand() { return '<div class="brand">Secured by PayPal Braintree · Meow Meow Veterinary Hospital</div>'; }
+  function brand() { return '<div class="brand">Secured by PayPal Braintree · <a href="https://amarabdulrehman.app.n8n.cloud/webhook/mmvh">Back to Meow Meow front desk</a></div>'; }
   function closed(icon, title, text) { card.innerHTML = '<div class="b">' + icon + '</div><h1>' + esc(title) + '</h1><p class="sub">' + esc(text) + '</p>' + brand(); }
   if (!REF || !K) { closed('🐾', 'This payment link is not valid', 'Please use the link from your chat or confirmation email.'); return; }
   fetch(API + '/mmvh-pay?ref=' + encodeURIComponent(REF) + '&k=' + encodeURIComponent(K))
