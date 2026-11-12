@@ -164,7 +164,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
 (function(){
   var API='https://amarabdulrehman.app.n8n.cloud/webhook/mmvh-api', n=0, busy=false, rid=function(){return Math.random().toString(36).slice(2,10)}, session=rid();
   var log=document.getElementById('log'), m=document.getElementById('m'), sendBtn=document.getElementById('send');
-  var TAG={BOOKED:'t-ok',CANCELED:'t-ok',RESCHEDULED:'t-ok',AVAILABLE:'t-ok',REPLAYED:'t-ok',UNAVAILABLE:'t-warn',DECLINED:'t-warn',VERIFICATION_FAILED:'t-warn',NOT_ACTIVE:'t-warn',DUPLICATE_REQUEST_ID:'t-warn',NEEDS_INFO:'t-info',HANDOFF:'t-hand',ERROR:'t-err',NEEDS_ATTENTION:'t-err'};
+  var TAG={BOOKED:'t-ok',CANCELED:'t-ok',RESCHEDULED:'t-ok',AVAILABLE:'t-ok',REPLAYED:'t-ok',UNAVAILABLE:'t-warn',DECLINED:'t-warn',VERIFICATION_FAILED:'t-warn',NOT_ACTIVE:'t-warn',DUPLICATE_REQUEST_ID:'t-warn',NEEDS_INFO:'t-info',HANDOFF:'t-hand',ERROR:'t-err',NEEDS_ATTENTION:'t-err',DEPOSIT_PAID:'t-ok',DEPOSIT_REFUNDED:'t-ok',DEPOSIT_PENDING:'t-warn',DEPOSIT_KEPT_LATE_CANCEL:'t-warn',DEPOSIT_EXPIRED_RELEASED:'t-warn'};
   function add(cls,text,status,meta,alts){
     var d=document.createElement('div'); d.className='msg '+cls;
     if(status){var s=document.createElement('span');s.className='tag '+(TAG[status]||'t-info');s.textContent=status.replace(/_/g,' ');d.appendChild(s);d.appendChild(document.createElement('br'));}
