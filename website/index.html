@@ -184,7 +184,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
     var ctl=new AbortController(), to=setTimeout(function(){ctl.abort();},100000);
     fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},signal:ctl.signal,body:JSON.stringify({request_id:id,session_id:session,message:text,owner_name:v('on'),email:v('em'),pet_name:v('pn'),species:v('sp')})})
     .then(function(r){return r.json();})
-    .then(function(j){if(Array.isArray(j)) j=j[0]; wait.remove(); var tx=j.response||'No response.'; if(j.pay_url) tx=tx.split(j.pay_url).join('the secure button below'); var bb=add('bot',tx,j.status,(j.reference?'Reference '+j.reference+' · ':'')+'Request '+j.request_id,j.alternatives); if(j.pay_url){var pb=document.createElement('a');pb.href=j.pay_url;pb.target='_blank';pb.rel='noopener';pb.className='paybtn';pb.textContent='Pay $10 refundable deposit · PayPal Braintree';bb.insertBefore(pb,bb.querySelector('.meta'));}})
+    .then(function(j){if(Array.isArray(j)) j=j[0]; wait.remove(); var tx=j.response||'No response.'; if(j.pay_url) tx=tx.split(j.pay_url).join('the secure button below'); var bb=add('bot',tx,j.status,(j.reference?'Reference '+j.reference+' · ':'')+'Request '+j.request_id,j.alternatives); if(j.pay_url){var pb=document.createElement('a');pb.href=j.pay_url;pb.target='_top';pb.className='paybtn';pb.textContent='Pay $10 refundable deposit · PayPal Braintree';bb.insertBefore(pb,bb.querySelector('.meta'));}})
     .catch(function(){wait.remove(); add('bot','The front desk did not respond. Nothing has been confirmed — please try again or call the clinic.','ERROR');})
     .finally(function(){clearTimeout(to); busy=false; sendBtn.disabled=false; m.focus();});
   }
