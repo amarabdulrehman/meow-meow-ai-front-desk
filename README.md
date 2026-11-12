@@ -1,4 +1,4 @@
-# Meow Meow Veterinary Hospital: AI Front Desk
+# Meow Meow Veterinary Hospital: AI Front Desk + PayPal Braintree No-Show Protection
 
 An AI receptionist for a vet clinic, built in **n8n** for **AI Agents Arena 2.0 (CUI Tech Fest 2026)**.
 A pet owner sends one message, and the system books, cancels or reschedules on **Google Calendar**, records it in **Google Sheets**, emails a confirmation, and hands anything medical to staff.
@@ -19,6 +19,26 @@ A pet owner sends one message, and the system books, cancels or reschedules on *
 - Reliability: evidence-based status, calendar/sheet rollback, idempotent replay, Gemini → backup Gemini → Groq fallback, timeouts, error-handler workflow
 - **Fault injection:** `debug.fault` in Config simulates any failure live
 - Extras: Gmail confirmations, replies in the customer's language, website chat memory, accessible website (larger text, high contrast, voice input)
+
+## NEW: No-show protection with PayPal Braintree (PayPal AI Hackathon 2026 update)
+Missed vet appointments waste a vet's time and lose the clinic money, and small clinics can't afford a front-desk person to chase deposits.
+The AI front desk now **books the slot and protects it with a refundable deposit**, end to end:
+
+1. **AI books** - the Gemini agent understands the request and calls `book_appointment` (unchanged guardrails).
+2. **Code requests the deposit** - the new `MMVH Payments (PayPal Braintree)` sub-workflow writes a `PENDING` row to the **Payments** ledger and returns a secure, unguessable pay link. The model never creates links or amounts.
+3. **Customer pays** - `pay.html` (static, GitHub Pages) loads the booking from `/webhook/mmvh-pay` and shows a Braintree **Drop-in** checkout (client token from the Braintree GraphQL API). The amount always comes from the server-side ledger, never from the browser.
+4. **Charge + confirm** - `/webhook/mmvh-pay-submit` runs `chargePaymentMethod`, marks the deposit `PAID` and emails a receipt.
+5. **Smart refunds** - on cancel, a deterministic policy decides: 24h+ before the visit = automatic `reverseTransaction` (void/refund); later = deposit kept (`KEPT_LATE_CANCEL`); never paid = `VOIDED`. The AI only explains the outcome in the customer's language.
+6. **Agentic follow-up** - a new agent tool `check_deposit_status` lets customers ask "did my deposit go through?" or "send my link again" (reference + email verified).
+
+**Resilience:** if payments fail, the booking still stands and the customer is told staff will follow up (`Payments Unavailable` path); every money step is logged in the ledger and CallLog.
+
+| Path | What it is |
+|---|---|
+| `workflows/mmvh-payments.json` | Payments sub-workflow: deposit request, pay-page API, charge, reverse/refund policy, status tool |
+| `pay.html` | Customer deposit page (Braintree Drop-in), served by GitHub Pages |
+
+**Extra setup:** create an n8n *Basic Auth* credential "Braintree Sandbox" (User = public key, Password = private key) and attach it to the 3 Braintree nodes. The `Payments` tab is created automatically. Point the `PayPal Deposit & Refunds` and `check_deposit_status` nodes at the imported Payments workflow, and enable GitHub Pages for `pay.html`. Sandbox test card: `4111 1111 1111 1111`.
 
 ## Statuses
 `BOOKED` · `CANCELED` · `RESCHEDULED` · `ALTERNATIVES` · `NEEDS_INFO` · `HANDOFF` · `DECLINED` · `ERROR` · `VERIFICATION_FAILED`

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meow Meow Veterinary Hospital - Deposit</title>
+<script src="https://js.braintreegateway.com/web/dropin/1.43.0/js/dropin.min.js"></script>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:linear-gradient(160deg,#fff7ed,#fde7d2);margin:0;min-height:100vh;display:grid;place-items:center;color:#1f2937}
+.c{background:#fff;width:min(460px,92vw);padding:28px;border-radius:22px;box-shadow:0 18px 50px #7c2d1222;margin:24px 0}
+h1{font-size:22px;margin:6px 0 4px}.sub{color:#6b7280;margin:0 0 16px}
+.sum{background:#fff7ed;border-radius:14px;padding:12px 14px;margin:12px 0;font-size:15px;line-height:1.6}
+.amt{font-size:28px;font-weight:800;color:#9a3412}
+button{width:100%;padding:14px;border:0;border-radius:12px;background:#003087;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+.pol{font-size:13px;color:#6b7280;margin-top:12px}.b{font-size:44px}
+.r{font-family:monospace;background:#f3f4f6;padding:2px 8px;border-radius:6px}
+.brand{font-size:12px;color:#6b7280;text-align:center;margin-top:14px}
+.msg{margin-top:12px;padding:10px;border-radius:10px;display:none}.bad{background:#fee2e2;color:#991b1b;display:block}
+.load{color:#6b7280;text-align:center;padding:30px 0}
+</style>
+</head>
+<body>
+<main class="c" id="card" aria-live="polite"><div class="load">Loading your booking…</div></main>
+<script>
+// Static pay page (GitHub Pages). All payment logic and the amount live server-side in n8n:
+//   GET  /webhook/mmvh-pay         -> booking summary + Braintree client token (from the ledger)
+//   POST /webhook/mmvh-pay-submit  -> chargePaymentMethod with the ledger amount, ledger -> PAID, receipt email
+(function () {
+  var API = 'https://amarabdulrehman.app.n8n.cloud/webhook';
+  var q = new URLSearchParams(location.search), REF = q.get('ref') || '', K = q.get('k') || '';
+  var card = document.getElementById('card');
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function brand() { return '<div class="brand">Secured by PayPal Braintree · Meow Meow Veterinary Hospital</div>'; }
+  function closed(icon, title, text) { card.innerHTML = '<div class="b">' + icon + '</div><h1>' + esc(title) + '</h1><p class="sub">' + esc(text) + '</p>' + brand(); }
+  if (!REF || !K) { closed('🐾', 'This payment link is not valid', 'Please use the link from your chat or confirmation email.'); return; }
+  fetch(API + '/mmvh-pay?ref=' + encodeURIComponent(REF) + '&k=' + encodeURIComponent(K))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d.state === 'paid') return closed('✅🐾', 'This deposit is already paid', 'Your appointment ' + REF + ' is confirmed. See you soon!');
+      if (d.state !== 'pay') return closed('🐾', d.state === 'invalid' ? 'This payment link is not valid' : 'This booking no longer needs a deposit', 'Please check the link from your chat or email, or contact the clinic.');
+      var sym = d.currency === 'USD' ? '$' : d.currency + ' ';
+      card.innerHTML = '<div class="b">🐾</div><h1>Confirm your appointment</h1><p class="sub">Refundable no-show deposit</p>' +
+        '<div class="sum"><div class="amt">' + esc(sym + d.amount) + '</div>Booking <span class="r">' + esc(REF) + '</span><br>' + esc(d.what) + '<br>' + esc(d.appt) + ' (clinic time)</div>' +
+        '<div id="dropin"></div><button id="pay" disabled>Pay deposit</button><div id="m" class="msg" role="alert"></div>' +
+        '<p class="pol">Cancel at least 24 hours before your visit and this deposit is refunded automatically. Sandbox test card: 4111 1111 1111 1111, any future date, any CVV.</p>' + brand();
+      var btn = document.getElementById('pay'), m = document.getElementById('m');
+      function bad(t) { m.className = 'msg bad'; m.textContent = t; }
+      if (!d.clientToken) return bad('Payments are temporarily unavailable. Your booking is still held - please try again shortly.');
+      braintree.dropin.create({ authorization: d.clientToken, container: '#dropin' }, function (err, inst) {
+        if (err) return bad('Could not load the payment form.');
+        btn.disabled = false;
+        btn.onclick = function () {
+          btn.disabled = true; btn.textContent = 'Processing…';
+          inst.requestPaymentMethod(function (e, p) {
+            if (e) { btn.disabled = false; btn.textContent = 'Pay deposit'; return; }
+            fetch(API + '/mmvh-pay-submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: REF, k: K, nonce: p.nonce }) })
+              .then(function (r) { return r.json(); })
+              .then(function (j) {
+                if (j.ok) {
+                  card.innerHTML = '<div class="b">✅🐾</div><h1>Deposit received - you\'re confirmed!</h1><p class="sub">Booking <span class="r">' + esc(REF) + '</span></p>' +
+                    '<div class="sum">Transaction ' + esc(j.transaction_id) + '<br>A receipt has been emailed to you.</div><p class="pol">Cancel 24h+ before your visit and the deposit is refunded automatically.</p>' + brand();
+                } else { bad(j.message || 'Payment failed.'); inst.clearSelectedPaymentMethod(); btn.disabled = false; btn.textContent = 'Pay deposit'; }
+              })
+              .catch(function () { bad('Network error - please try again. You will not be charged twice.'); btn.disabled = false; btn.textContent = 'Pay deposit'; });
+          });
+        };
+      });
+    })
+    .catch(function () { closed('⚠️', 'We could not load this payment', 'Please try again in a moment or contact the clinic.'); });
+})();
+</script>
+</body>
+</html>
